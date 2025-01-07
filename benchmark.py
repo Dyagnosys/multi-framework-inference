@@ -6,19 +6,37 @@ import time
 import psutil
 import torch
 import json
-import ncnn
-import MNN
 import tvm
 from tvm import relay
 from pathlib import Path
 from typing import Dict, List, Tuple
 from llama_cpp import Llama
+import seaborn as sns  # Added missing import for seaborn
+
+# Attempt to import ncnn and handle its absence gracefully
+try:
+    import ncnn
+except ImportError:
+    ncnn = None
+    print("Warning: ncnn module not found. NCNN benchmarks will be skipped.")
+
+# Attempt to import MNN and handle its absence gracefully
+try:
+    import MNN
+except ImportError:
+    MNN = None
+    print("Warning: MNN module not found. MNN benchmarks will be skipped.")
 
 class ComprehensiveBenchmark:
     def __init__(self):
         self.results = []
         self.system_info = self._get_system_info()
-        self.frameworks = ['onnx', 'ncnn', 'mnn', 'tvm', 'llama.cpp']
+        # Initialize frameworks list based on available modules
+        self.frameworks = ['onnx', 'tvm', 'llama.cpp']
+        if ncnn is not None:
+            self.frameworks.insert(1, 'ncnn')
+        if MNN is not None:
+            self.frameworks.insert(2 if ncnn is not None else 1, 'mnn')
         
     def _get_system_info(self) -> Dict[str, any]:
         return {
@@ -27,6 +45,10 @@ class ComprehensiveBenchmark:
             'logical_cores': psutil.cpu_count(logical=True),
             'memory_gb': round(psutil.virtual_memory().total / (1024 ** 3), 2),
             'onnxruntime_version': ort.__version__,
+            'tvm_version': tvm.__version__,
+            'llama_cpp_version': Llama.__version__ if hasattr(Llama, '__version__') else 'Unknown',
+            'mnn_version': MNN.__version__ if MNN else 'Not Installed',
+            'ncnn_version': ncnn.__version__ if ncnn else 'Not Installed'
         }
     
     def _get_cpu_model(self) -> str:
@@ -113,7 +135,8 @@ class ComprehensiveBenchmark:
             models[name] = {
                 'path': path,
                 'input_shape': input_shape,
-                'input_data': dummy_input.numpy().astype(np.float32)
+                'input_data': dummy_input.numpy().astype(np.float32) if 'transformer' not in name \
+                              else dummy_input.numpy()
             }
         
         return models
@@ -141,6 +164,7 @@ class ComprehensiveBenchmark:
     def benchmark_ncnn(self, model_info: Dict, num_threads: int,
                       num_iterations: int = 100) -> Dict:
         net = ncnn.Net()
+        # Assuming NCNN models have been converted to .param and .bin format
         net.load_param(f"{model_info['path']}.param")
         net.load_model(f"{model_info['path']}.bin")
         
@@ -171,8 +195,13 @@ class ComprehensiveBenchmark:
                      num_iterations: int = 100) -> Dict:
         target = "llvm -mcpu=generic"
         
+        # Load ONNX model and convert to Relay before building
+        import onnx
+        onnx_model = onnx.load(model_info['path'])
+        mod, params = relay.frontend.from_onnx(onnx_model)
+        
         with tvm.transform.PassContext(opt_level=3):
-            lib = relay.build(model_info['path'], target=target)
+            lib = relay.build(mod, target=target, params=params)
         
         module = tvm.contrib.graph_executor.GraphModule(
             lib["default"](tvm.cpu())
@@ -226,7 +255,7 @@ class ComprehensiveBenchmark:
             'p99_latency': np.percentile(latencies, 99),
             'min_latency': np.min(latencies),
             'max_latency': np.max(latencies),
-            'throughput': len(latencies) / np.sum(latencies) * 1000
+            'throughput': len(latencies) / np.sum(latencies) * 1000  # inferences per second
         }
         
         print(f"\n{framework} with {num_threads} threads:")
@@ -244,13 +273,17 @@ class ComprehensiveBenchmark:
             print(f"\nBenchmarking {model_name.upper()} model...")
             
             for threads in thread_configs:
-                # Run benchmarks for each framework
+                # Initialize benchmark functions dictionary without ncnn/mnn by default
                 benchmark_fns = {
                     'onnx': self.benchmark_onnx,
-                    'ncnn': self.benchmark_ncnn,
-                    'mnn': self.benchmark_mnn,
-                    'tvm': self.benchmark_tvm
+                    'tvm': self.benchmark_tvm,
                 }
+                
+                # Add NCNN and MNN benchmarks if modules are available
+                if ncnn is not None:
+                    benchmark_fns['ncnn'] = self.benchmark_ncnn
+                if MNN is not None:
+                    benchmark_fns['mnn'] = self.benchmark_mnn
                 
                 # Add llama.cpp only for transformer models
                 if model_name == 'transformer':
@@ -260,6 +293,8 @@ class ComprehensiveBenchmark:
                     try:
                         result = benchmark_fn(model_info, threads)
                         if result:
+                            # Add model type information for later grouping
+                            result['model_type'] = model_name
                             self.results.append(result)
                     except Exception as e:
                         print(f"Error benchmarking {framework}: {str(e)}")
@@ -297,13 +332,16 @@ class ComprehensiveBenchmark:
                 x = np.arange(len(frameworks))
                 width = 0.2
                 
-                for i, threads in enumerate(model_data['threads'].unique()):
+                for i, threads in enumerate(sorted(model_data['threads'].unique())):
                     thread_data = model_data[model_data['threads'] == threads]
-                    values = [thread_data[thread_data['framework'] == fw][metric].iloc[0] 
-                             for fw in frameworks]
+                    # Gather metric values for each framework at this thread count
+                    values = []
+                    for fw in frameworks:
+                        fw_data = thread_data[thread_data['framework'] == fw]
+                        # Use first occurrence for simplicity
+                        values.append(fw_data[metric].iloc[0] if not fw_data.empty else np.nan)
                     
-                    ax.bar(x + i*width, values, width, 
-                          label=f'{threads} threads')
+                    ax.bar(x + i*width, values, width, label=f'{threads} threads')
                 
                 ax.set_xlabel('Framework')
                 ax.set_ylabel(metric)
@@ -313,7 +351,7 @@ class ComprehensiveBenchmark:
                 ax.grid(True, alpha=0.3)
                 ax.legend()
             
-            plt.tight_layout()
+            plt.tight_layout(rect=[0, 0.03, 1, 0.95])
             plt.savefig(f'{output_dir}/{model_type}_benchmark_results.png')
             plt.close()
         

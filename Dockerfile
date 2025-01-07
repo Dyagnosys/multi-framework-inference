@@ -20,9 +20,20 @@ RUN apt-get update && apt-get install -y \
     libatlas-base-dev \
     liblapack-dev \
     libblas-dev \
-    cmake \
     pkg-config \
     libssl-dev \
+    gpg \
+    && wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null | gpg --dearmor - | tee /etc/apt/trusted.gpg.d/kitware.gpg >/dev/null \
+    && apt-add-repository 'deb https://apt.kitware.com/ubuntu/ focal main' \
+    && apt-get update \
+    && apt-get install -y cmake \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install LLVM dependencies with version-specific packages
+RUN apt-get update && apt-get install -y \
+    llvm-10-dev \
+    clang \
+    libclang-10-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Set CPU flags for optimized builds
@@ -95,17 +106,20 @@ RUN python3 -m pip install \
     tornado \
     typing_extensions \
     psutil \
-    pytest
+    pytest \
+    wheel \
+    onnx
 
 # Clone TVM with recursive submodules
-RUN git clone --recursive https://github.com/apache/tvm && \
-    cd tvm
+RUN git clone --recursive https://github.com/apache/tvm tvm
 
 # Prepare build directory and configuration
 WORKDIR /build/tvm
 RUN mkdir -p build && \
-    cp cmake/config.cmake build/config.cmake && \
-    sed -i 's/set(USE_LLVM OFF)/set(USE_LLVM ON)/' build/config.cmake && \
+    cp cmake/config.cmake build/config.cmake
+
+# Modify TVM build configuration
+RUN sed -i 's/set(USE_LLVM OFF)/set(USE_LLVM ON)/' build/config.cmake && \
     sed -i 's/set(USE_CUDA OFF)/set(USE_CUDA OFF)/' build/config.cmake
 
 # Build TVM
@@ -116,10 +130,11 @@ RUN mkdir -p build && cd build && \
         -DUSE_LLVM=ON \
         -DUSE_CUDA=OFF \
         -DUSE_VULKAN=OFF \
-        -DUSE_OPENCL=OFF && \
-    cmake --build . --config Release -j4
+        -DUSE_OPENCL=OFF \
+        -DCMAKE_CXX_STANDARD=17 && \
+    cmake --build . --config Release -j$(nproc)
 
-# Install TVM Python bindings with detailed logging
+# Install TVM Python bindings in tvm-builder
 RUN cd /build/tvm/python && \
     python3 -m pip install -v . && \
     python3 -m pip install -v -e .
@@ -127,9 +142,14 @@ RUN cd /build/tvm/python && \
 # Final stage
 FROM base
 
-# Set environment variables for libraries
-ENV LD_LIBRARY_PATH="/usr/local/lib:/usr/lib:${LD_LIBRARY_PATH:-}"
-ENV PYTHONPATH="/usr/local/lib/python3.8/site-packages:${PYTHONPATH:-}"
+# Set environment variables for libraries and Python path
+ENV LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-/usr/local/lib:/usr/lib}"
+ENV PYTHONPATH="${PYTHONPATH:-/usr/local/lib/python3.8/dist-packages}"
+
+# Copy TVM installation from tvm-builder
+COPY --from=tvm-builder /usr/local/lib/python3.8/dist-packages/tvm* /usr/local/lib/python3.8/dist-packages/
+# Removed the non-existent TVM library copy that was causing errors:
+# COPY --from=tvm-builder /usr/local/lib/tvm /usr/local/lib/tvm
 
 # Copy built artifacts from previous stages
 COPY --from=ncnn-builder /install/lib /usr/local/lib/
@@ -137,30 +157,28 @@ COPY --from=ncnn-builder /install/include /usr/local/include/
 COPY --from=mnn-builder /install/lib /usr/local/lib/
 COPY --from=mnn-builder /install/include /usr/local/include/
 COPY --from=llamacpp-builder /install/bin /usr/local/bin/
-COPY --from=tvm-builder /build/tvm/build /usr/local/lib/tvm
-COPY --from=tvm-builder /build/tvm/python /usr/local/lib/python3.8/dist-packages/tvm
 
-# Install Python packages from requirements
-COPY requirements.txt .
-RUN pip3 install --no-cache-dir -r requirements.txt
-
-# Install other Python packages (excluding apache-tvm)
-RUN pip3 install --no-cache-dir \
-    onnx \
-    onnxruntime==1.16.0 \
-    ncnn \
-    MNN \
-    llama-cpp-python
-
-# Set runtime CPU affinity and thread count
+# Set environment variables for thread counts
 ENV OMP_NUM_THREADS=4
 ENV MKL_NUM_THREADS=4
 ENV OPENBLAS_NUM_THREADS=4
 ENV VECLIB_MAXIMUM_THREADS=4
 ENV NUMEXPR_NUM_THREADS=4
 
-# Copy benchmark script
+# Copy benchmark script and requirements
+COPY requirements.txt .
 COPY benchmark.py .
+
+# Install Python packages from requirements
+RUN pip3 install --no-cache-dir -r requirements.txt
+
+# Install additional Python packages (excluding ncnn)
+RUN pip3 install --no-cache-dir \
+    onnx \
+    onnxruntime==1.16.0 \
+    MNN \
+    llama-cpp-python \
+    seaborn
 
 # Run ldconfig to update library cache
 RUN ldconfig
