@@ -1,4 +1,4 @@
-# ONNX OpenVINO Benchmark
+# ONNX Runtime, NCNN, MNN, TVM, and llama.cpp Benchmark
 
 This repository contains a comprehensive benchmarking suite for multiple deep learning inference frameworks, including ONNX Runtime, NCNN, MNN, TVM, and llama.cpp. The benchmark creates test models (MLP, CNN, Transformer), runs inference across these frameworks, collects performance metrics, and generates visualizations comparing their performance.
 
