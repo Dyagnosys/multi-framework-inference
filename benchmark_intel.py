@@ -169,26 +169,52 @@ class IntelBenchmark:
             logger.error(f"ONNX error: {e}")
             return {}
 
-    def benchmark_pytorch(self, model_info, threads):
-        try:
-            torch.set_num_threads(threads)
-            model = self.models[Path(model_info['path']).stem]
-            model = ipex.optimize(model.eval())
-            input_data = torch.from_numpy(model_info['input_data'])
-            
-            def run_inference():
-                with torch.no_grad():
-                    return model(input_data)
-                    
-            metrics = self._measure_performance(run_inference)
-            metrics['framework'] = 'PyTorch-IPEX'
-            metrics['threads'] = threads
-            return metrics
-            
-        except Exception as e:
-            logger.error(f"PyTorch error: {e}")
-            return {}
+    
+    def benchmark_pytorch(self, model_name, threads):
+        model = self.models[model_name].eval()
+        input_shape = (1, 3, 224, 224) if model_name == 'resnet50' else (1, 16, 512)
+        input_tensor = torch.randn(input_shape)
+        
+        # IPEX optimization
+        model = ipex.optimize(model)
+        input_tensor = input_tensor.contiguous(memory_format=torch.channels_last)
+        
+        # Warmup
+        torch.set_num_threads(threads)
+        with torch.no_grad():
+            for _ in range(self.num_warmup):
+                _ = model(input_tensor)
+        
+        # Benchmark
+        latencies = []
+        with torch.no_grad():
+            for _ in range(self.num_iterations):
+                start = time.perf_counter()
+                _ = model(input_tensor)
+                torch.backends.mkldnn.enabled = True
+                latencies.append((time.perf_counter() - start) * 1000)  # ms
 
+        latencies = np.array(latencies)
+        results = {
+            'model': model_name,
+            'threads': threads,
+            'avg_latency': np.mean(latencies),
+            'p50_latency': np.percentile(latencies, 50),
+            'p95_latency': np.percentile(latencies, 95),
+            'p99_latency': np.percentile(latencies, 99),
+            'min_latency': np.min(latencies),
+            'max_latency': np.max(latencies),
+            'throughput': 1000 / np.mean(latencies)
+        }
+        
+        logger.info(f"\n{model_name} with {threads} threads:")
+        logger.info(f"Average latency: {results['avg_latency']:.2f} ms")
+        logger.info(f"P95 latency: {results['p95_latency']:.2f} ms")
+        logger.info(f"Throughput: {results['throughput']:.2f} inf/sec")
+        
+        return results
+
+        
     def benchmark_tensorflow(self, model_info, threads):
         try:
             tf.config.threading.set_intra_op_parallelism_threads(threads)
