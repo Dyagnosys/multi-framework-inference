@@ -6,32 +6,78 @@ import time
 import psutil
 import torch
 import json
+import mxnet as mx
+import tensorflow as tf
+import onednn
 from pathlib import Path
-from typing import Dict, List
-import seaborn as sns  # For visualization
+from typing import Dict, List, Optional, Union
+import seaborn as sns
+from dataclasses import dataclass
+import logging
+from concurrent.futures import ThreadPoolExecutor
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+@dataclass
+class ModelConfig:
+    name: str
+    input_shape: tuple
+    use_int_input: bool = False
+    
+class BenchmarkException(Exception):
+    pass
 
 class ComprehensiveBenchmark:
-    def __init__(self):
+    def __init__(self, num_warmup: int = 10, num_iterations: int = 100):
         self.results = []
         self.system_info = self._get_system_info()
+        self.num_warmup = num_warmup
+        self.num_iterations = num_iterations
         self.frameworks = [
             'onnx',
-            'tensorflow_xla',         # Placeholder
+            'tensorflow_xla',
             'pytorch_torchscript',
-            'mxnet',                  # Placeholder
-            'onednn',                 # Placeholder
-            'tflite_xnnpack'          # Placeholder
+            'mxnet',
+            'onednn',
+            'tflite_xnnpack'
         ]
-        self.torchscript_models = {}  # Store TorchScript models
+        self.torchscript_models = {}
+        self._initialize_frameworks()
+        
+    def _initialize_frameworks(self):
+        """Initialize framework-specific configurations"""
+        # ONNX Runtime
+        self.ort_options = ort.SessionOptions()
+        self.ort_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        
+        # MXNet
+        mx.engine.set_bulk_size(1)  # Default to single thread
+        
+        # OneDNN
+        self.onednn_engine = onednn.Engine()
+        
+        # TFLite
+        self.tflite_delegates = {
+            'xnnpack': tf.lite.experimental.load_delegate('libxnnpack.so')
+        }
 
     def _get_system_info(self) -> Dict[str, any]:
-        return {
-            'cpu_model': self._get_cpu_model(),
-            'physical_cores': psutil.cpu_count(logical=False),
-            'logical_cores': psutil.cpu_count(logical=True),
-            'memory_gb': round(psutil.virtual_memory().total / (1024 ** 3), 2),
-            'onnxruntime_version': ort.__version__,
-        }
+        try:
+            return {
+                'cpu_model': self._get_cpu_model(),
+                'physical_cores': psutil.cpu_count(logical=False),
+                'logical_cores': psutil.cpu_count(logical=True),
+                'memory_gb': round(psutil.virtual_memory().total / (1024 ** 3), 2),
+                'onnxruntime_version': ort.__version__,
+                'mxnet_version': mx.__version__,
+                'tensorflow_version': tf.__version__,
+                'pytorch_version': torch.__version__,
+                'onednn_version': onednn.__version__
+            }
+        except Exception as e:
+            logger.error(f"Error getting system info: {e}")
+            return {}
     
     def _get_cpu_model(self) -> str:
         try:
@@ -43,140 +89,243 @@ class ComprehensiveBenchmark:
             return 'Unknown CPU'
         return 'Unknown CPU'
 
-    def create_test_models(self):
-        """Create test models for different architectures using PyTorch,
-           export to ONNX, and create TorchScript versions."""
+    def create_test_models(self) -> Dict[str, Dict]:
+        """Create benchmark models for different architectures"""
         models = {}
+        model_configs = [
+            ModelConfig('mlp', (1, 128)),
+            ModelConfig('cnn', (1, 3, 24, 24)),
+            ModelConfig('transformer', (1, 16), use_int_input=True)
+        ]
         
-        # Define simple models
-        class MLPModel(torch.nn.Module):
-            def __init__(self):
-                super().__init__()
-                self.fc1 = torch.nn.Linear(128, 256)
-                self.fc2 = torch.nn.Linear(256, 128)
-                self.relu = torch.nn.ReLU()
-            def forward(self, x):
-                x = self.relu(self.fc1(x))
-                x = self.fc2(x)
-                return x
-        
-        class CNNModel(torch.nn.Module):
-            def __init__(self):
-                super().__init__()
-                self.conv1 = torch.nn.Conv2d(3, 16, 3, padding=1)
-                self.conv2 = torch.nn.Conv2d(16, 32, 3, padding=1)
-                self.pool = torch.nn.MaxPool2d(2)
-                self.fc = torch.nn.Linear(32 * 6 * 6, 10)
-                self.relu = torch.nn.ReLU()
-            def forward(self, x):
-                x = self.pool(self.relu(self.conv1(x)))
-                x = self.pool(self.relu(self.conv2(x)))
-                x = x.view(-1, 32 * 6 * 6)
-                x = self.fc(x)
-                return x
-
-        class TransformerModel(torch.nn.Module):
-            def __init__(self):
-                super().__init__()
-                self.embedding = torch.nn.Embedding(1000, 64)
-                self.transformer = torch.nn.TransformerEncoder(
-                    torch.nn.TransformerEncoderLayer(d_model=64, nhead=4, dim_feedforward=256),
-                    num_layers=2
-                )
-                self.fc = torch.nn.Linear(64, 10)
-            def forward(self, x):
-                x = self.embedding(x)
-                x = self.transformer(x)
-                x = self.fc(x.mean(dim=1))
-                return x
-
-        model_configs = {
-            'mlp': (MLPModel(), (1, 128)),
-            'cnn': (CNNModel(), (1, 3, 24, 24)),
-            'transformer': (TransformerModel(), (1, 16))
-        }
-
-        for name, (model, input_shape) in model_configs.items():
-            model.eval()
-            dummy_input = torch.randn(input_shape) if name != 'transformer' else torch.randint(0, 1000, input_shape)
-            path = f'test_{name}.onnx'
+        for config in model_configs:
+            model = self._create_model(config)
+            input_data = self._generate_input_data(config)
+            path = self._export_to_onnx(model, input_data, config)
+            self._create_torchscript(model, input_data, config)
             
-            # Export to ONNX
-            torch.onnx.export(model, dummy_input, path,
-                              verbose=False, input_names=['input'], output_names=['output'], opset_version=12)
-            
-            # Convert model to TorchScript
-            scripted_model = torch.jit.trace(model, dummy_input)
-            self.torchscript_models[name] = scripted_model
-            
-            models[name] = {
+            models[config.name] = {
                 'path': path,
-                'input_shape': input_shape,
-                'input_data': dummy_input.numpy().astype(np.float32) if name != 'transformer' else dummy_input.numpy()
+                'input_shape': config.input_shape,
+                'input_data': input_data.numpy()
             }
         
         return models
 
-    def benchmark_onnx(self, model_info: Dict, num_threads: int, num_iterations: int = 100) -> Dict:
-        options = ort.SessionOptions()
-        options.intra_op_num_threads = num_threads
-        options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    def _create_model(self, config: ModelConfig) -> torch.nn.Module:
+        if config.name == 'mlp':
+            return torch.nn.Sequential(
+                torch.nn.Linear(128, 256),
+                torch.nn.ReLU(),
+                torch.nn.Linear(256, 128)
+            )
+        elif config.name == 'cnn':
+            return torch.nn.Sequential(
+                torch.nn.Conv2d(3, 16, 3, padding=1),
+                torch.nn.ReLU(),
+                torch.nn.MaxPool2d(2),
+                torch.nn.Conv2d(16, 32, 3, padding=1),
+                torch.nn.ReLU(),
+                torch.nn.MaxPool2d(2),
+                torch.nn.Flatten(),
+                torch.nn.Linear(32 * 6 * 6, 10)
+            )
+        elif config.name == 'transformer':
+            return torch.nn.Sequential(
+                torch.nn.Embedding(1000, 64),
+                torch.nn.TransformerEncoder(
+                    torch.nn.TransformerEncoderLayer(
+                        d_model=64, nhead=4, dim_feedforward=256
+                    ),
+                    num_layers=2
+                ),
+                torch.nn.Linear(64, 10)
+            )
+        else:
+            raise ValueError(f"Unknown model type: {config.name}")
 
-        session = ort.InferenceSession(
-            model_info['path'],
-            sess_options=options,
-            providers=['CPUExecutionProvider']
-        )
+    def _generate_input_data(self, config: ModelConfig) -> torch.Tensor:
+        if config.use_int_input:
+            return torch.randint(0, 1000, config.input_shape)
+        return torch.randn(config.input_shape)
 
-        input_name = session.get_inputs()[0].name
-        latencies = self._run_inference(
-            lambda: session.run(None, {input_name: model_info['input_data']}),
-            num_iterations
-        )
+    def _export_to_onnx(self, model: torch.nn.Module, input_data: torch.Tensor, 
+                       config: ModelConfig) -> str:
+        path = f'test_{config.name}.onnx'
+        try:
+            torch.onnx.export(
+                model, input_data, path,
+                input_names=['input'], 
+                output_names=['output'],
+                opset_version=13,
+                dynamic_axes={'input': {0: 'batch_size'},
+                            'output': {0: 'batch_size'}}
+            )
+        except Exception as e:
+            logger.error(f"ONNX export failed for {config.name}: {str(e)}")
+            raise
+        return path
 
-        return self._calculate_metrics('ONNX', num_threads, latencies)
+    def _create_torchscript(self, model: torch.nn.Module, input_data: torch.Tensor,
+                           config: ModelConfig):
+        model.eval()
+        self.torchscript_models[config.name] = torch.jit.trace(model, input_data)
 
-    def benchmark_pytorch_torchscript(self, model_info: Dict, num_threads: int, num_iterations: int = 100) -> Dict:
-        # Select the correct TorchScript model based on model type
-        model_type = model_info['path'].split('_')[1].split('.')[0]  # e.g., "mlp" from "test_mlp.onnx"
-        scripted_model = self.torchscript_models.get(model_type)
-        if scripted_model is None:
-            print(f"No TorchScript model found for {model_type}")
+    def benchmark_onnx(self, model_info: Dict, num_threads: int) -> Dict:
+        try:
+            self.ort_options.intra_op_num_threads = num_threads
+            session = ort.InferenceSession(
+                model_info['path'],
+                sess_options=self.ort_options,
+                providers=['CPUExecutionProvider']
+            )
+            input_name = session.get_inputs()[0].name
+            latencies = self._run_inference(
+                lambda: session.run(None, {input_name: model_info['input_data']}),
+                model_info['input_shape'][0]
+            )
+            return self._calculate_metrics('ONNX', num_threads, latencies)
+        except Exception as e:
+            logger.error(f"ONNX benchmark error: {e}")
             return {}
 
-        # Run inference using TorchScript model
-        input_data = model_info['input_data']
-        latencies = self._run_inference(lambda: scripted_model(torch.from_numpy(input_data)), num_iterations)
-        return self._calculate_metrics('PyTorch TorchScript', num_threads, latencies)
+    def benchmark_pytorch_torchscript(self, model_info: Dict, num_threads: int) -> Dict:
+        try:
+            torch.set_num_threads(num_threads)
+            model_type = Path(model_info['path']).stem.split('_')[1]
+            model = self.torchscript_models.get(model_type)
+            
+            if model is None:
+                raise BenchmarkException(f"No TorchScript model found for {model_type}")
+                
+            input_data = torch.from_numpy(model_info['input_data'])
+            latencies = self._run_inference(
+                lambda: model(input_data),
+                model_info['input_shape'][0]
+            )
+            return self._calculate_metrics('PyTorch TorchScript', num_threads, latencies)
+        except Exception as e:
+            logger.error(f"PyTorch benchmark error: {e}")
+            return {}
 
-    # Placeholders for unimplemented frameworks
-    def benchmark_tensorflow_xla(self, model_info: Dict, num_threads: int, num_iterations: int = 100) -> Dict:
-        print("TensorFlow XLA benchmarking not implemented.")
-        return {}
+    def benchmark_mxnet(self, model_info: Dict, num_threads: int) -> Dict:
+        try:
+            mx.engine._set_bulk_size(num_threads)
+            sym, arg_params, aux_params = mx.contrib.onnx.import_model(model_info['path'])
+            mod = mx.mod.Module(symbol=sym, context=mx.cpu())
+            
+            data_shape = model_info['input_shape']
+            if len(data_shape) == 2:  # For transformer model
+                data_shape = (data_shape[0], data_shape[1])
+                
+            mod.bind(for_training=False, data_shapes=[('input', data_shape)])
+            mod.set_params(arg_params=arg_params, aux_params=aux_params)
+            
+            data_iter = mx.io.NDArrayIter(
+                model_info['input_data'], 
+                batch_size=model_info['input_shape'][0]
+            )
+            
+            latencies = self._run_inference(
+                lambda: mod.predict(data_iter).asnumpy(),
+                model_info['input_shape'][0]
+            )
+            
+            return self._calculate_metrics('MXNet', num_threads, latencies)
+        except Exception as e:
+            logger.error(f"MXNet benchmark error: {e}")
+            return {}
 
-    def benchmark_mxnet(self, model_info: Dict, num_threads: int, num_iterations: int = 100) -> Dict:
-        print("Apache MXNet benchmarking not implemented.")
-        return {}
+    def benchmark_onednn(self, model_info: Dict, num_threads: int) -> Dict:
+        try:
+            onednn.set_num_threads(num_threads)
+            model = onednn.Model(self.onednn_engine)
+            model.load_onnx(model_info['path'])
+            
+            stream = onednn.Stream(self.onednn_engine)
+            mem_format = (onednn.Memory.Format.nc 
+                        if len(model_info['input_shape']) == 2 
+                        else onednn.Memory.Format.nchw)
+            
+            input_memory = onednn.Memory(
+                self.onednn_engine,
+                model_info['input_data'].shape,
+                onednn.Memory.DataType.f32,
+                mem_format
+            )
+            
+            def inference():
+                input_memory.set_data_handle(model_info['input_data'])
+                outputs = model.execute(stream, {'input': input_memory})
+                stream.wait()
+                return outputs[0]
+            
+            latencies = self._run_inference(inference, model_info['input_shape'][0])
+            return self._calculate_metrics('OneDNN', num_threads, latencies)
+        except Exception as e:
+            logger.error(f"OneDNN benchmark error: {e}")
+            return {}
 
-    def benchmark_onednn(self, model_info: Dict, num_threads: int, num_iterations: int = 100) -> Dict:
-        print("OneDNN benchmarking not implemented.")
-        return {}
+    def benchmark_tflite_xnnpack(self, model_info: Dict, num_threads: int) -> Dict:
+        try:
+            converter = tf.lite.TFLiteConverter.from_saved_model(model_info['path'])
+            converter.optimizations = [tf.lite.Optimize.DEFAULT]
+            converter.target_spec.supported_ops = [
+                tf.lite.OpsSet.TFLITE_BUILTINS,
+                tf.lite.OpsSet.SELECT_TF_OPS
+            ]
+            converter.inference_input_type = tf.float32
+            converter.inference_output_type = tf.float32
+            converter.experimental_new_converter = True
+            
+            tflite_model = converter.convert()
+            
+            interpreter = tf.lite.Interpreter(
+                model_content=tflite_model,
+                num_threads=num_threads,
+                experimental_delegates=[self.tflite_delegates['xnnpack']]
+            )
+            interpreter.allocate_tensors()
+            
+            input_details = interpreter.get_input_details()
+            output_details = interpreter.get_output_details()
+            
+            def inference():
+                interpreter.set_tensor(
+                    input_details[0]['index'], 
+                    model_info['input_data']
+                )
+                interpreter.invoke()
+                return interpreter.get_tensor(output_details[0]['index'])
+            
+            latencies = self._run_inference(inference, model_info['input_shape'][0])
+            return self._calculate_metrics('TFLite XNNPACK', num_threads, latencies)
+        except Exception as e:
+            logger.error(f"TFLite benchmark error: {e}")
+            return {}
 
-    def benchmark_tflite_xnnpack(self, model_info: Dict, num_threads: int, num_iterations: int = 100) -> Dict:
-        print("TFLite XNNPACK benchmarking not implemented.")
-        return {}
-
-    def _run_inference(self, inference_fn, num_iterations: int) -> List[float]:
-        for _ in range(10):  # Warmup
+    def _run_inference(self, inference_fn, batch_size: int) -> List[float]:
+        # Warmup
+        for _ in range(self.num_warmup):
             inference_fn()
+            
         latencies = []
-        for _ in range(num_iterations):
+        total_samples = 0
+        
+        for _ in range(self.num_iterations):
             start_time = time.time()
             inference_fn()
-            latencies.append((time.time() - start_time) * 1000)
+            latency = (time.time() - start_time) * 1000  # ms
+            latencies.append(latency)
+            total_samples += batch_size
+            
         return latencies
 
-    def _calculate_metrics(self, framework: str, num_threads: int, latencies: List[float]) -> Dict:
+    def _calculate_metrics(self, framework: str, num_threads: int, 
+                         latencies: List[float]) -> Dict:
+        if not latencies:
+            return {}
+            
         latencies = np.array(latencies)
         metrics = {
             'framework': framework,
@@ -190,51 +339,82 @@ class ComprehensiveBenchmark:
             'max_latency': np.max(latencies),
             'throughput': len(latencies) / np.sum(latencies) * 1000
         }
-        print(f"\n{framework} with {num_threads} threads:")
-        print(f"Average latency: {metrics['avg_latency']:.2f} ms")
-        print(f"P95 latency: {metrics['p95_latency']:.2f} ms")
-        print(f"Throughput: {metrics['throughput']:.2f} inf/sec")
+        
+        logger.info(f"\n{framework} with {num_threads} threads:")
+        logger.info(f"Average latency: {metrics['avg_latency']:.2f} ms")
+        logger.info(f"P95 latency: {metrics['p95_latency']:.2f} ms")
+        logger.info(f"Throughput: {metrics['throughput']:.2f} inf/sec")
+        
         return metrics
 
     def run_full_benchmark(self):
-        models = self.create_test_models()
-        thread_configs = [1, 2, self.system_info['physical_cores']]
-        
-        benchmark_functions = {
-            'onnx': self.benchmark_onnx,
-            'tensorflow_xla': self.benchmark_tensorflow_xla,
-            'pytorch_torchscript': self.benchmark_pytorch_torchscript,
-            'mxnet': self.benchmark_mxnet,
-            'onednn': self.benchmark_onednn,
-            'tflite_xnnpack': self.benchmark_tflite_xnnpack
-        }
-        
-        for model_name, model_info in models.items():
-            print(f"\nBenchmarking {model_name.upper()} model...")
-            for threads in thread_configs:
-                for fw in self.frameworks:
-                    benchmark_fn = benchmark_functions.get(fw)
-                    if benchmark_fn:
-                        try:
-                            result = benchmark_fn(model_info, threads)
-                            if result:
-                                result['model_type'] = model_name
-                                self.results.append(result)
-                        except Exception as e:
-                            print(f"Error benchmarking {fw}: {str(e)}")
+        logger.info("Starting comprehensive framework benchmark...")
+        logger.info("\nSystem Information:")
+        for key, value in self.system_info.items():
+            logger.info(f"{key}: {value}")
+
+        try:
+            models = self.create_test_models()
+            thread_configs = [1, 2, self.system_info['physical_cores']]
+            
+            benchmark_functions = {
+                'onnx': self.benchmark_onnx,
+                'tensorflow_xla': self.benchmark_tensorflow_xla,
+                'pytorch_torchscript': self.benchmark_pytorch_torchscript,
+                'mxnet': self.benchmark_mxnet,
+                'onednn': self.benchmark_onednn,
+                'tflite_xnnpack': self.benchmark_tflite_xnnpack
+            }
+            
+            with ThreadPoolExecutor(max_workers=len(self.frameworks)) as executor:
+                for model_name, model_info in models.items():
+                    logger.info(f"\nBenchmarking {model_name.upper()} model...")
+                    for threads in thread_configs:
+                        futures = []
+                        for fw in self.frameworks:
+                            benchmark_fn = benchmark_functions.get(fw)
+                            if benchmark_fn:
+                                futures.append(
+                                    executor.submit(benchmark_fn, model_info, threads)
+                                )
+                        
+                        for future in futures:
+                            try:
+                                result = future.result()
+                                if result:
+                                    result['model_type'] = model_name
+                                    self.results.append(result)
+                            except Exception as e:
+                                logger.error(f"Benchmark error: {e}")
+
+        except Exception as e:
+            logger.error(f"Benchmark failed: {e}")
+            raise
+
+        logger.info("\nBenchmark complete!")
 
     def save_results(self, output_dir: str = '.'):
+        """Save benchmark results and generate visualizations"""
         Path(output_dir).mkdir(exist_ok=True)
+        
+        # Save raw results
         df = pd.DataFrame(self.results)
         df.to_csv(f'{output_dir}/benchmark_results.csv', index=False)
+        
+        # Save system info
         with open(f'{output_dir}/system_info.json', 'w') as f:
             json.dump(self.system_info, f, indent=2)
+
+        # Generate plots
         self._create_plots(df, output_dir)
-    
+        logger.info(f"Results saved to {output_dir}")
+
     def _create_plots(self, df: pd.DataFrame, output_dir: str):
-        model_types = ['mlp', 'cnn', 'transformer']
+        """Create visualization plots for benchmark results"""
+        model_types = df['model_type'].unique()
         metrics = ['avg_latency', 'p95_latency', 'throughput']
         
+        # Per-model performance plots
         for model_type in model_types:
             fig, axes = plt.subplots(len(metrics), 1, figsize=(15, 20))
             fig.suptitle(f'{model_type.upper()} Model Performance Comparison')
@@ -255,8 +435,8 @@ class ComprehensiveBenchmark:
                     ax.bar(x + i*width, values, width, label=f'{threads} threads')
                 
                 ax.set_xlabel('Framework')
-                ax.set_ylabel(metric)
-                ax.set_title(f'{metric} by Framework and Thread Count')
+                ax.set_ylabel(metric.replace('_', ' ').title())
+                ax.set_title(f'{metric.replace("_", " ").title()} by Framework and Thread Count')
                 ax.set_xticks(x + width)
                 ax.set_xticklabels(frameworks, rotation=45)
                 ax.grid(True, alpha=0.3)
@@ -266,6 +446,7 @@ class ComprehensiveBenchmark:
             plt.savefig(f'{output_dir}/{model_type}_benchmark_results.png')
             plt.close()
         
+        # Throughput heatmap
         plt.figure(figsize=(12, 8))
         pivot = df.pivot_table(
             values='throughput',
@@ -280,14 +461,9 @@ class ComprehensiveBenchmark:
         plt.close()
 
 def main():
-    print("Starting comprehensive framework benchmark...")
     benchmark = ComprehensiveBenchmark()
-    print("\nSystem Information:")
-    for key, value in benchmark.system_info.items():
-        print(f"{key}: {value}")
     benchmark.run_full_benchmark()
     benchmark.save_results()
-    print("\nBenchmark complete! Results saved to current directory.")
 
 if __name__ == "__main__":
     main()
