@@ -25,6 +25,9 @@ ENV TF_NUM_INTRAOP_THREADS=4
 ENV TF_ENABLE_ONEDNN_OPTS=1
 ENV TORCH_CPU_ARCH=avx2
 
+# Suppress TensorFlow informational logs
+ENV TF_CPP_MIN_LOG_LEVEL=2
+
 COPY requirements.txt .
 RUN pip3 install --no-cache-dir -r requirements.txt
 
