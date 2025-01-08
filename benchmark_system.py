@@ -273,42 +273,8 @@ class ComprehensiveBenchmark:
         return {}
 
     def benchmark_tflite_xnnpack(self, model_info: Dict, num_threads: int) -> Dict:
-        try:
-            converter = tf.lite.TFLiteConverter.from_saved_model(model_info['path'])
-            converter.optimizations = [tf.lite.Optimize.DEFAULT]
-            converter.target_spec.supported_ops = [
-                tf.lite.OpsSet.TFLITE_BUILTINS,
-                tf.lite.OpsSet.SELECT_TF_OPS
-            ]
-            converter.inference_input_type = tf.float32
-            converter.inference_output_type = tf.float32
-            converter.experimental_new_converter = True
-            
-            tflite_model = converter.convert()
-            
-            interpreter = tf.lite.Interpreter(
-                model_content=tflite_model,
-                num_threads=num_threads,
-                experimental_delegates=[self.tflite_delegates['xnnpack']]
-            )
-            interpreter.allocate_tensors()
-            
-            input_details = interpreter.get_input_details()
-            output_details = interpreter.get_output_details()
-            
-            def inference():
-                interpreter.set_tensor(
-                    input_details[0]['index'], 
-                    model_info['input_data']
-                )
-                interpreter.invoke()
-                return interpreter.get_tensor(output_details[0]['index'])
-            
-            latencies = self._run_inference(inference, model_info['input_shape'][0])
-            return self._calculate_metrics('TFLite XNNPACK', num_threads, latencies)
-        except Exception as e:
-            logger.error(f"TFLite benchmark error: {e}")
-            return {}
+        logger.warning("TFLite XNNPACK benchmarking not implemented")
+        return {}
 
     def _run_inference(self, inference_fn, batch_size: int) -> List[float]:
         # Warmup
