@@ -30,13 +30,14 @@ class EmotionPredictor:
         
     def initialize_inference_session(self, model_path):
         options = ort.SessionOptions()
-        options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_EXTENDED
+        options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        options.intra_op_num_threads = 2  # Match CPU count
         options.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
-        options.intra_op_num_threads = 4
+        options.enable_profiling = False
         
         providers = [('CPUExecutionProvider', {
-            'arena_extend_strategy': 'kNextPowerOfTwo',
-            'cpu_memory_arena_cfg': 'kArenaExtendWay'
+            'arena_extend_strategy': 'kSameAsRequested',
+            'cpu_memory_arena_cfg': 'kSameAsRequested'
         })]
         
         return ort.InferenceSession(model_path, sess_options=options, providers=providers)
