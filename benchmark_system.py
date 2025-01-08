@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Union
 import seaborn as sns
 from dataclasses import dataclass
+import onnxruntime as ort
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
