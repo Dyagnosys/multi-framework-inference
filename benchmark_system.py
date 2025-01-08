@@ -75,9 +75,6 @@ class ComprehensiveBenchmark:
         tf.config.threading.set_inter_op_parallelism_threads(psutil.cpu_count(logical=False))
         tf.config.threading.set_intra_op_parallelism_threads(psutil.cpu_count(logical=False))
         
-        # OneDNN
-        self.onednn_engine = onednn.Engine()
-        
         # TFLite
         self.tflite_delegates = {
             'xnnpack': tf.lite.experimental.load_delegate('libxnnpack.so')
