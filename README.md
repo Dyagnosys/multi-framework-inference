@@ -1,16 +1,59 @@
 
 # Emotion Recognition System with ONNX and OpenVINO
 
-This project implements a high-performance emotion recognition pipeline using ONNX and OpenVINO with real-time video processing. The pipeline is optimized for Intel architecture and uses threading to process multiple video frames concurrently, achieving high throughput while maintaining low latency. The emotion recognition model is based on a pre-trained ONNX model for facial emotion recognition.
+This project implements a high-performance emotion recognition pipeline using ONNX and OpenVINO for real-time video processing. The pipeline is optimized for Intel architectures and utilizes threading, batching, and advanced inference optimizations to achieve high throughput with low latency. The emotion recognition model is based on a pre-trained ONNX model for facial emotion recognition and integrates seamlessly with video processing workflows.
+
+---
+
+## Table of Contents
+
+- [Features](#features)
+- [Repository Structure](#repository-structure)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Docker Setup](#docker-setup)
+- [Usage](#usage)
+- [Model Details](#model-details)
+- [Performance Optimization](#performance-optimization)
+- [Configuration and Environment Variables](#configuration-and-environment-variables)
+- [Contributing](#contributing)
+- [License](#license)
+
+---
 
 ## Features
 
-- **High-Performance Inference**: Utilizes ONNX Runtime with Intel-specific optimizations, including MKL and MKLDNN, for fast and efficient inference on CPU.
-- **Real-Time Processing**: Supports real-time processing of video frames with threading and batching techniques.
-- **Batching and Threading**: Frames are processed in batches to improve throughput, with multiple threads managing the preprocessing and inference tasks.
-- **Emotion Labels**: The system recognizes the following emotions: Angry, Disgust, Fear, Happy, Sad, Surprise, and Neutral.
-- **Video Processing**: Supports video input and output, processing frames and overlaying emotion predictions onto the video.
-  
+- **High-Performance Inference**: Utilizes ONNX Runtime with Intel-specific optimizations, including MKL and MKLDNN, for fast CPU inference.
+- **Real-Time Video Processing**: Processes video frames concurrently using threading and batching, optimizing for real-time emotion detection.
+- **Multi-threading and Queuing**: Efficient use of queues and background threads to manage frame preprocessing, batching, and inference.
+- **Emotion Recognition**: Recognizes seven emotions: Angry, Disgust, Fear, Happy, Sad, Surprise, and Neutral.
+- **Video Annotation**: Overlays emotion labels on video frames and outputs annotated video.
+- **Model Flexibility**: Easily switch between different model architectures (e.g., ResNet50, LSTM) and ONNX models.
+
+---
+
+## Repository Structure
+
+```
+├── assets
+│   ├── models
+│   │   └── FER_static_ResNet50_AffectNet.onnx  # Pre-trained ONNX model
+│   └── videos
+│       └── input.mp4                        # Default input video
+├── Dockerfile                               # Docker configuration for setting up environment
+├── main.py                                  # Main script to run emotion recognition pipeline
+├── model_architectures.py                   # PyTorch model definitions (e.g., ResNet50, LSTMPyTorch)
+├── README.md                                # Project documentation
+└── requirements.txt                         # Python dependencies
+```
+
+- **main.py**: Contains the `EmotionProcessor` class and video processing logic. It manages frame queues, preprocessing, batching, and inference using ONNX Runtime.
+- **model_architectures.py**: Contains PyTorch model definitions for ResNet50 and LSTMPyTorch. These can be used to train or export models to ONNX if needed.
+- **assets/**: Directory for models and video assets.
+- **Dockerfile**: Provides a Docker environment for reproducible setup and execution.
+
+---
+
 ## Requirements
 
 - Python 3.6 or later
@@ -30,19 +73,35 @@ This project implements a high-performance emotion recognition pipeline using ON
 - `scikit-learn`
 - `pillow`
 
-You can install the required dependencies using the following command:
-
+Install dependencies using:
 ```bash
 pip install -r requirements.txt
 ```
 
+---
+
+## Installation
+
+1. Clone the repository:
+    ```bash
+    git clone https://github.com/yourusername/emotion-recognition.git
+    cd emotion-recognition
+    ```
+
+2. Install required Python packages:
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+3. Ensure that the pre-trained model `FER_static_ResNet50_AffectNet.onnx` is placed in the `assets/models/` directory and the input video `input.mp4` is in `assets/videos/`.
+
+---
+
 ## Docker Setup
 
-This project provides a Dockerfile to set up the environment and dependencies. The container is based on the `openvino/onnxruntime_ep_ubuntu20` image.
+This project provides a Dockerfile to set up the environment with all dependencies. The container is based on the `openvino/onnxruntime_ep_ubuntu20` image.
 
 ### Docker Build and Run
-
-To build and run the Docker container:
 
 1. **Build the Docker image**:
     ```bash
@@ -53,109 +112,146 @@ To build and run the Docker container:
     ```bash
     docker run --rm -v /path/to/your/video:/app emotion-recognition
     ```
+    Replace `/path/to/your/video` with the actual path to your video files if needed.
 
-Replace `/path/to/your/video` with the actual path to the directory containing your input video.
+The Docker container ensures that all optimized libraries and dependencies are correctly configured for Intel architectures.
+
+---
 
 ## Usage
 
 ### Input Video
 
-The input video should be placed in the `assets/videos/` directory, and the `input.mp4` file will be used by default. You can modify the input path in the `main()` function if necessary.
-
-### Model
-
-The emotion recognition model used in this pipeline is an ONNX model. By default, it loads from the `assets/models/FER_static_ResNet50_AffectNet.onnx` file. You can replace this model with your own ONNX-based emotion recognition model by updating the `model_path` variable in the `main()` function.
+- Place the input video in the `assets/videos/` directory as `input.mp4` or modify the path in `main.py` accordingly.
+- The system processes each frame, overlays emotion predictions, and writes the annotated frames to an output video.
 
 ### Running the Application
 
-Once the setup is complete, you can run the application with the following command:
-
+Execute the main script:
 ```bash
 python main.py
 ```
-
-The system will process the video, detect emotions in each frame, and generate an output video with emotion labels overlaid.
+The system will:
+- Initialize the `EmotionProcessor` with the ONNX model.
+- Read frames from the input video.
+- Preprocess and batch frames.
+- Run inference on each batch.
+- Overlay emotion predictions on frames.
+- Save the annotated video as `output.mp4`.
 
 ### Output Video
 
-The processed video will be saved to `output.mp4` by default. The emotion label corresponding to the highest probability in each frame will be overlaid on the video. You can change the output path in the `process_video()` function.
+- The processed video with emotion labels will be saved as `output.mp4` in the project directory by default.
+- You can adjust input/output paths and parameters by modifying the corresponding variables and functions in `main.py`.
 
-## Code Overview
+---
 
-### EmotionProcessor Class
+## Model Details
 
-This class manages the emotion recognition process. It performs the following tasks:
+### ResNet50 Architecture (`model_architectures.py`)
 
-1. **Model Initialization**: Initializes the ONNX runtime session with optimized Intel-specific execution providers (e.g., MKLDNN) for better performance.
-2. **Preprocessing**: Prepares each frame by resizing and normalizing it according to the model's expected input format.
-3. **Batching and Inference**: Processes frames in batches to maximize throughput and performs inference using the ONNX model.
-4. **Multi-threading**: Utilizes multiple threads to handle frame processing and inference concurrently, which speeds up the overall pipeline.
+The `ResNet50` class in `model_architectures.py` defines a modified ResNet50 architecture tailored for emotion recognition:
 
-### Emotion Recognition Logic
+- It uses a custom initial convolution layer with stride 2 and same padding.
+- Pre-trained ResNet50 layers are loaded from `torchvision.models`.
+- The final fully connected layer (`fc1`) is modified to output predictions for 7 emotion classes.
+- Features can be extracted using the `extract_features` method for further processing or analysis.
 
-1. **Frame Preprocessing**: The frame is resized to match the model's input size (224x224), normalized, and prepared for inference.
-2. **Inference**: Batched frames are passed to the model for emotion recognition. The model's output is a vector of probabilities corresponding to different emotions.
-3. **Labeling**: The emotion with the highest probability is extracted, and the corresponding label is overlaid on the video frame.
+### LSTM Architecture (`model_architectures.py`)
 
-### Video Processing
+The `LSTMPyTorch` class defines an LSTM-based model for sequence-based emotion analysis:
 
-The video is read frame by frame, and emotion recognition is applied to each frame. The system processes every 10th frame to avoid overloading the inference process. The frames with their predicted emotions are then written to the output video file.
+- Two sequential LSTM layers process input sequences.
+- The final fully connected layer (`fc`) maps LSTM outputs to emotion class predictions.
+- This architecture can be useful for processing sequences of features or temporal data.
 
-## Model Optimization
+### Model Conversion and Export
 
-The ONNX Runtime is used to load the pre-trained model and run inference. The system is configured to use Intel-specific execution providers such as MKLDNN to maximize performance on Intel CPUs.
+To convert these PyTorch models to ONNX format:
+```python
+import torch
+from model_architectures import ResNet50
 
-### Environment Variables for Optimization
+model = ResNet50(num_classes=7)
+model.eval()
+dummy_input = torch.randn(1, 3, 224, 224)
+torch.onnx.export(model, dummy_input, "assets/models/FER_static_ResNet50_AffectNet.onnx", 
+                  input_names=["input"], output_names=["output"], opset_version=11)
+```
+This will generate an ONNX model that can be used by the EmotionProcessor.
 
-- `MKLDNN_VERBOSE=1`: Enables verbose output for MKLDNN.
-- `KMP_AFFINITY=granularity=fine,compact,1,0`: Controls thread affinity for parallel tasks.
-- `KMP_BLOCKTIME=1`: Sets the amount of time a thread is allowed to remain idle before being killed.
-- `OMP_NUM_THREADS=2`: Controls the number of threads OpenMP will use.
-- `MKL_NUM_THREADS=2`: Controls the number of threads MKL will use.
-- `OPENBLAS_NUM_THREADS=2`: Controls the number of threads OpenBLAS will use.
-- `VECLIB_MAXIMUM_THREADS=2`: Controls the number of threads for vector library operations.
-- `NUMEXPR_NUM_THREADS=2`: Controls the number of threads for NumExpr operations.
-
-## Threading and Queues
-
-The system uses multiple threads and queues to handle the frames:
-
-1. **Input Queue**: Holds frames for processing.
-2. **Output Queue**: Holds results from inference to be written to the output video.
-
-The frames are processed in batches, and the results are placed in the output queue for further processing.
+---
 
 ## Performance Optimization
 
-Here are a few suggestions for improving inference performance on a CPU-only system:
+### Batching and Threading
 
-### Quantize the Model
+- **Batch Processing**: Frames are batched in groups of 4 (`BATCH_SIZE = 4`) to maximize throughput while maintaining low latency.
+- **Threading**: A separate processing thread handles preprocessing and inference, using queues to manage input and output frames concurrently.
 
-Quantizing the model weights and activations to INT8 can significantly reduce model size and speed up CPU inference with minimal accuracy loss. Most deep learning frameworks support post-training quantization. For example, in PyTorch, you can use `torch.quantization.quantize_dynamic` to quantize an existing model.
+### Optimized Inference Settings
 
-### Enable Multi-threading
+- **ONNX Runtime Configuration**: The `EmotionProcessor` configures the ONNX session for optimal performance:
+  - Enables all graph optimizations.
+  - Sets intra- and inter-op parallelism threads.
+  - Uses Intel MKLDNN execution provider with specific thread settings.
 
-Make sure your inference code is taking advantage of multiple CPU cores. Use your framework's options to control thread count, e.g., `torch.set_num_threads(N)` in PyTorch. Experiment with different thread counts to find the optimal tradeoff between throughput and latency for your workload. Be aware of Python's Global Interpreter Lock (GIL), which can limit multi-threading benefits for Python code.
+- **Environment Variables**: Tweak system-level threading and library behavior using environment variables:
+  - `MKLDNN_VERBOSE=1`
+  - `KMP_AFFINITY=granularity=fine,compact,1,0`
+  - `KMP_BLOCKTIME=1`
+  - `OMP_NUM_THREADS=2`
+  - `MKL_NUM_THREADS=2`
+  - `OPENBLAS_NUM_THREADS=2`
+  - `VECLIB_MAXIMUM_THREADS=2`
+  - `NUMEXPR_NUM_THREADS=2`
 
-### Optimize Input Pipeline
+These variables control how libraries allocate threads and can be set in your shell or Docker environment to optimize performance.
 
-Loading, decoding, and preprocessing inputs can be a bottleneck, especially at high concurrency. Preprocess inputs offline if possible and store them in an optimized format like TFRecord, LMDB, etc. Use efficient libraries like OpenCV, PIL, and numpy for decoding and transforming. Move preprocessing to background threads to overlap with inference.
+### Additional Optimization Suggestions
 
-### Tune Performance-related Parameters
+- **Quantization**: Use post-training quantization to reduce model size and speed up inference.
+- **Multi-threading in Python**: Adjust the number of threads and experiment with Python's Global Interpreter Lock (GIL) limitations.
+- **Input Pipeline Optimization**: Preprocess inputs in parallel, cache results, or use more efficient data formats.
+- **Framework Parameters**: Tune parameters like batch size, inference precision (FP16/INT8), and thread parallelism for your hardware.
 
-- **Batch Size**: Larger batches improve throughput but increase latency. Find the right balance.
-- **Inference Precision**: FP16 or even FP32 may be faster on some CPUs compared to INT8.
-- **Framework Parameters**: Use parameters like `OMP_NUM_THREADS`, `intra/inter_op_parallelism_threads`, etc., to optimize performance.
-- **Grid Search**: Perform a grid search to find the optimal combination of parameters for your workload.
+### Model Architecture Considerations
 
-### Consider Alternative Architectures
+- **CPU-Friendly Architectures**: Consider models like EfficientNet or MobileNet for better performance on CPU.
+- **Layer Optimization**: Simplify the network architecture where possible to reduce computation without sacrificing accuracy.
 
-Some model architectures are more CPU-friendly than others. For example, EfficientNets and MobileNets tend to perform well on CPUs. Avoid very deep models, NAS-based models, or those relying heavily on large GEMMs. Architecture changes may require retraining, so quantization and threading optimizations are easier to try first.
+---
+
+## Configuration and Environment Variables
+
+To optimize performance, set these environment variables before running the application:
+```bash
+export MKLDNN_VERBOSE=1
+export KMP_AFFINITY=granularity=fine,compact,1,0
+export KMP_BLOCKTIME=1
+export OMP_NUM_THREADS=2
+export MKL_NUM_THREADS=2
+export OPENBLAS_NUM_THREADS=2
+export VECLIB_MAXIMUM_THREADS=2
+export NUMEXPR_NUM_THREADS=2
+```
+These variables configure threading, affinity, and library behaviors to maximize CPU utilization and inference speed.
+
+---
 
 ## Contributing
 
-Feel free to fork the repository and submit pull requests. If you encounter bugs or have suggestions for improvements, please create an issue in the repository.
+Contributions are welcome! Please follow these steps:
+
+1. Fork the repository.
+2. Create a new branch for your feature or bugfix.
+3. Implement your changes with clear commit messages.
+4. Submit a pull request, detailing your changes and the problem they solve.
+
+For major changes, please open an issue first to discuss your ideas.
+
+---
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
