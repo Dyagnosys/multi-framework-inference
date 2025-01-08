@@ -7,17 +7,51 @@ import psutil
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import json
 import intel_extension_for_pytorch as ipex
 import onnxruntime as ort
 import tensorflow as tf
 from pathlib import Path
 import seaborn as sns
 
+# Optional: Suppress TensorFlow warnings
+import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# [Previous ResNet50 and LSTM model implementations remain the same]
+# --- Added missing model definitions ---
+class ResNet50(nn.Module):
+    def __init__(self, num_classes=7):
+        super(ResNet50, self).__init__()
+        # A simplified ResNet-like block for demonstration
+        self.conv = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3)
+        self.bn = nn.BatchNorm2d(64)
+        self.relu = nn.ReLU(inplace=True)
+        self.avgpool = nn.AdaptiveAvgPool2d((1,1))
+        self.fc = nn.Linear(64, num_classes)
+
+    def forward(self, x):
+        x = self.conv(x)
+        x = self.bn(x)
+        x = self.relu(x)
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+        x = self.fc(x)
+        return x
+
+class LSTMModel(nn.Module):
+    def __init__(self, input_size=512, hidden_size=256, num_layers=1, num_classes=7):
+        super(LSTMModel, self).__init__()
+        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
+        self.fc = nn.Linear(hidden_size, num_classes)
+
+    def forward(self, x):
+        out, _ = self.lstm(x)
+        out = out[:, -1, :]
+        out = self.fc(out)
+        return out
+# --- End of added model definitions ---
 
 class BenchmarkFrameworks:
     def __init__(self, num_warmup=50, num_iterations=1000):
@@ -40,13 +74,13 @@ class BenchmarkFrameworks:
             
             # Export ONNX
             torch.onnx.export(model, input_data, f'{name}.onnx',
-                            input_names=['input_0'],
-                            output_names=['output_0'],
-                            dynamic_axes={'input_0': {0: 'batch_size'},
-                                        'output_0': {0: 'batch_size'}},
-                            opset_version=13)
+                              input_names=['input_0'],
+                              output_names=['output_0'],
+                              dynamic_axes={'input_0': {0: 'batch_size'},
+                                            'output_0': {0: 'batch_size'}},
+                              opset_version=13)
             
-            # Export TensorFlow
+            # Export TorchScript
             traced_model = torch.jit.trace(model, input_data)
             torch.jit.save(traced_model, f'{name}.pt')
 
@@ -119,24 +153,30 @@ class BenchmarkFrameworks:
             tf.config.threading.set_intra_op_parallelism_threads(threads)
 
             input_data = self.models[model_name]['input_data']
-            converter = tf.lite.TFLiteConverter.from_saved_model(f"{model_name}.pt")
-            converter.optimizations = [tf.lite.Optimize.DEFAULT]
-            converter.target_spec.supported_ops = [
-                tf.lite.OpsSet.TFLITE_BUILTINS,
-                tf.lite.OpsSet.SELECT_TF_OPS
-            ]
-            model = converter.convert()
 
-            interpreter = tf.lite.Interpreter(model_content=model)
-            interpreter.allocate_tensors()
+            # Define and load a TensorFlow/Keras model based on model_name
+            if model_name == 'resnet50':
+                # Convert input from channels-first (PyTorch) to channels-last (TensorFlow)
+                input_data_tf = np.transpose(input_data, (0, 2, 3, 1))
+                model = tf.keras.applications.ResNet50(
+                    weights=None, input_shape=(224, 224, 3), classes=7
+                )
+                run_input = input_data_tf
+            elif model_name == 'lstm':
+                input_data_tf = input_data
+                model = tf.keras.Sequential([
+                    tf.keras.layers.LSTM(256, input_shape=(16, 512)),
+                    tf.keras.layers.Dense(7)
+                ])
+                run_input = input_data_tf
+            else:
+                raise ValueError(f"Unknown model: {model_name}")
 
-            input_details = interpreter.get_input_details()
-            output_details = interpreter.get_output_details()
+            # Build the model by running a dummy inference once
+            model(tf.convert_to_tensor(run_input, dtype=tf.float32), training=False)
 
             def run_inference():
-                interpreter.set_tensor(input_details[0]['index'], input_data)
-                interpreter.invoke()
-                return interpreter.get_tensor(output_details[0]['index'])
+                return model(tf.convert_to_tensor(run_input, dtype=tf.float32), training=False)
 
             metrics = self._measure_performance(run_inference)
             metrics.update({'framework': 'tensorflow-mkl', 'model': model_name, 'threads': threads})
@@ -147,11 +187,11 @@ class BenchmarkFrameworks:
             return {}
 
     def _measure_performance(self, run_fn) -> dict:
-        # Warmup
+        # Warmup runs
         for _ in range(self.num_warmup):
             run_fn()
 
-        # Benchmark
+        # Benchmark runs
         latencies = []
         for _ in range(self.num_iterations):
             start = time.perf_counter()
@@ -208,7 +248,7 @@ class BenchmarkFrameworks:
             for framework in model_data['framework'].unique():
                 fw_data = model_data[model_data['framework'] == framework]
                 plt.plot(fw_data['threads'], fw_data['throughput'],
-                        marker='o', label=f'{model}-{framework}')
+                         marker='o', label=f'{model}-{framework}')
 
         plt.xlabel('Threads')
         plt.ylabel('Throughput (inf/sec)')
