@@ -3,6 +3,5 @@
   "physical_cores": 4,
   "logical_cores": 4,
   "memory_gb": 7.59,
-  "onnxruntime_version": "1.16.0",
-  "openvino_version": "2024.0.0-14509-34caeefd078-releases/2024/0"
+  "onnxruntime_version": "1.16.0"
 }

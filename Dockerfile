@@ -1,70 +1,54 @@
 # Base stage for common dependencies
 FROM ubuntu:20.04 AS base
 
-# Set environment variables
 ENV DEBIAN_FRONTEND=noninteractive
 WORKDIR /app
 
-# Install system dependencies and newer CMake
+# Install common system dependencies and newer CMake in one RUN
 RUN apt-get update && apt-get install -y \
-    python3 \
-    python3-pip \
-    python3-dev \
-    git \
-    wget \
-    build-essential \
-    ninja-build \
-    libopenblas-dev \
-    software-properties-common \
-    gfortran \
-    libatlas-base-dev \
-    liblapack-dev \
-    libblas-dev \
-    pkg-config \
-    libssl-dev \
-    gpg \
-    && wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null | gpg --dearmor - | tee /etc/apt/trusted.gpg.d/kitware.gpg >/dev/null \
-    && apt-add-repository 'deb https://apt.kitware.com/ubuntu/ focal main' \
-    && apt-get update \
-    && apt-get install -y cmake \
-    && rm -rf /var/lib/apt/lists/*
+    python3 python3-pip python3-dev git wget build-essential ninja-build \
+    libopenblas-dev software-properties-common gfortran libatlas-base-dev \
+    liblapack-dev libblas-dev pkg-config libssl-dev gpg && \
+    wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null \
+      | gpg --dearmor - | tee /etc/apt/trusted.gpg.d/kitware.gpg >/dev/null && \
+    apt-add-repository 'deb https://apt.kitware.com/ubuntu/ focal main' && \
+    apt-get update && apt-get install -y cmake && \
+    rm -rf /var/lib/apt/lists/*
 
-# Install LLVM dependencies with version-specific packages
+# Install LLVM dependencies in a separate RUN
 RUN apt-get update && apt-get install -y \
-    llvm-10-dev \
-    clang \
-    libclang-10-dev \
-    && rm -rf /var/lib/apt/lists/*
+    llvm-10-dev clang libclang-10-dev && \
+    rm -rf /var/lib/apt/lists/*
 
-# Set CPU flags for optimized builds
+# Set CPU flags and upgrade pip in another RUN
 ENV CFLAGS="-O3 -msse4.2 -mssse3"
 ENV CXXFLAGS="-O3 -msse4.2 -mssse3"
-
-# Upgrade pip and install build tools
 RUN python3 -m pip install --upgrade pip setuptools wheel
 
-# NCNN stage
+# ---- NCNN Stage ----
 FROM base AS ncnn-builder
 WORKDIR /build
-RUN git clone https://github.com/Tencent/ncnn.git && \
-    cd ncnn && \
-    mkdir -p build && cd build && \
+# Separate NCNN build steps into individual RUN commands for clarity
+RUN git clone https://github.com/Tencent/ncnn.git
+RUN cd ncnn && mkdir -p build
+RUN cd ncnn/build && \
     cmake -DCMAKE_BUILD_TYPE=Release \
           -DNCNN_VULKAN=OFF \
           -DNCNN_SSE2=ON \
           -DNCNN_AVX=OFF \
           -DNCNN_AVX2=OFF \
           -DNCNN_BUILD_EXAMPLES=OFF \
-          -DCMAKE_INSTALL_PREFIX=/install .. && \
-    cmake --build . --config Release -j4 && \
+          -DCMAKE_INSTALL_PREFIX=/install ..
+RUN cd ncnn/build && \
+    cmake --build . --config Release -j$(nproc) && \
     cmake --install .
 
-# MNN stage
+# ---- MNN Stage ----
 FROM base AS mnn-builder
 WORKDIR /build
-RUN git clone https://github.com/alibaba/MNN.git && \
-    cd MNN && \
-    mkdir -p build && cd build && \
+RUN git clone https://github.com/alibaba/MNN.git
+RUN cd MNN && mkdir -p build
+RUN cd MNN/build && \
     cmake -DCMAKE_BUILD_TYPE=Release \
           -DMNN_BUILD_SHARED_LIBS=ON \
           -DMNN_SEP_BUILD=OFF \
@@ -72,16 +56,17 @@ RUN git clone https://github.com/alibaba/MNN.git && \
           -DMNN_BUILD_DEMO=OFF \
           -DMNN_USE_SSE=ON \
           -DMNN_SUPPORT_BF16=OFF \
-          -DCMAKE_INSTALL_PREFIX=/install .. && \
-    cmake --build . --config Release -j4 && \
+          -DCMAKE_INSTALL_PREFIX=/install .. 
+RUN cd MNN/build && \
+    cmake --build . --config Release -j$(nproc) && \
     cmake --install .
 
-# llama.cpp stage
+# ---- llama.cpp Stage ----
 FROM base AS llamacpp-builder
 WORKDIR /build
-RUN git clone https://github.com/ggerganov/llama.cpp && \
-    cd llama.cpp && \
-    mkdir -p build && cd build && \
+RUN git clone https://github.com/ggerganov/llama.cpp
+RUN cd llama.cpp && mkdir -p build
+RUN cd llama.cpp/build && \
     cmake .. \
         -DLLAMA_NATIVE=OFF \
         -DLLAMA_AVX=OFF \
@@ -90,39 +75,27 @@ RUN git clone https://github.com/ggerganov/llama.cpp && \
         -DLLAMA_FMA=OFF \
         -DLLAMA_F16C=OFF \
         -DCMAKE_INSTALL_PREFIX=/install \
-        -DCMAKE_BUILD_TYPE=Release && \
-    cmake --build . --config Release -j4 && \
+        -DCMAKE_BUILD_TYPE=Release
+RUN cd llama.cpp/build && \
+    cmake --build . --config Release -j$(nproc) && \
     mkdir -p /install/bin && \
     cp bin/* /install/bin/
 
-# TVM stage
+# ---- TVM Stage ----
 FROM base AS tvm-builder
 WORKDIR /build
 
-# Install additional Python dependencies for TVM
-RUN python3 -m pip install \
-    numpy \
-    scipy \
-    tornado \
-    typing_extensions \
-    psutil \
-    pytest \
-    wheel \
-    onnx
+# Install additional Python dependencies for TVM in separate RUN
+RUN python3 -m pip install numpy scipy tornado typing_extensions psutil pytest wheel onnx
 
-# Clone TVM with recursive submodules
+# Clone TVM repository in its own RUN
 RUN git clone --recursive https://github.com/apache/tvm tvm
 
-# Prepare build directory and configuration
 WORKDIR /build/tvm
-RUN mkdir -p build && \
-    cp cmake/config.cmake build/config.cmake
-
-# Modify TVM build configuration
+RUN mkdir -p build && cp cmake/config.cmake build/config.cmake
 RUN sed -i 's/set(USE_LLVM OFF)/set(USE_LLVM ON)/' build/config.cmake && \
     sed -i 's/set(USE_CUDA OFF)/set(USE_CUDA OFF)/' build/config.cmake
 
-# Build TVM
 RUN mkdir -p build && cd build && \
     cmake .. \
         -DCMAKE_BUILD_TYPE=Release \
@@ -134,54 +107,36 @@ RUN mkdir -p build && cd build && \
         -DCMAKE_CXX_STANDARD=17 && \
     cmake --build . --config Release -j$(nproc)
 
-# Install TVM Python bindings in tvm-builder
 RUN cd /build/tvm/python && \
-    python3 -m pip install -v . && \
-    python3 -m pip install -v -e .
+    python3 -m pip install --upgrade pip && \
+    python3 -m pip install --target=/install/python-packages -e .
 
-# Final stage
+# ---- Final Stage ----
 FROM base
 
-# Set environment variables for libraries and Python path
-ENV LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-/usr/local/lib:/usr/lib}"
-ENV PYTHONPATH="${PYTHONPATH:-/usr/local/lib/python3.8/dist-packages}"
+# Fixed environment variable assignments to avoid undefined variable warnings
+ENV LD_LIBRARY_PATH=/usr/local/lib:/usr/lib
+ENV PYTHONPATH=/usr/local/lib/python3.8/dist-packages:/install/python-packages
 
-# Copy TVM installation from tvm-builder
-COPY --from=tvm-builder /usr/local/lib/python3.8/dist-packages/tvm* /usr/local/lib/python3.8/dist-packages/
-# Removed the non-existent TVM library copy that was causing errors:
-# COPY --from=tvm-builder /usr/local/lib/tvm /usr/local/lib/tvm
-
-# Copy built artifacts from previous stages
-COPY --from=ncnn-builder /install/lib /usr/local/lib/
-COPY --from=ncnn-builder /install/include /usr/local/include/
-COPY --from=mnn-builder /install/lib /usr/local/lib/
-COPY --from=mnn-builder /install/include /usr/local/include/
-COPY --from=llamacpp-builder /install/bin /usr/local/bin/
-
-# Set environment variables for thread counts
 ENV OMP_NUM_THREADS=4
-ENV MKL_NUM_THREADS=4
+ENV MKL_NUM_THREADS=4  
 ENV OPENBLAS_NUM_THREADS=4
 ENV VECLIB_MAXIMUM_THREADS=4
 ENV NUMEXPR_NUM_THREADS=4
 
-# Copy benchmark script and requirements
 COPY requirements.txt .
-COPY benchmark.py .
+COPY benchmark_no_tvm.py . 
 
-# Install Python packages from requirements
 RUN pip3 install --no-cache-dir -r requirements.txt
 
-# Install additional Python packages (excluding ncnn)
 RUN pip3 install --no-cache-dir \
     onnx \
     onnxruntime==1.16.0 \
+    tvm \
     MNN \
     llama-cpp-python \
     seaborn
 
-# Run ldconfig to update library cache
 RUN ldconfig
 
-# Set default command
-CMD ["python3", "benchmark.py"]
+CMD ["python3", "benchmark_no_tvm.py"]
