@@ -6,7 +6,12 @@ import time
 import psutil
 import torch
 import json
-import mxnet as mx
+try:
+    import mxnet as mx
+    MXNET_AVAILABLE = True
+except (ImportError, AttributeError):
+    MXNET_AVAILABLE = False
+    logger.warning("MXNet import failed - MXNet benchmarks will be skipped")
 import tensorflow as tf
 import onednn
 from pathlib import Path
@@ -209,6 +214,9 @@ class ComprehensiveBenchmark:
             return {}
 
     def benchmark_mxnet(self, model_info: Dict, num_threads: int) -> Dict:
+        if not MXNET_AVAILABLE:
+            logger.warning("MXNet not available - skipping benchmark")
+            return {}
         try:
             mx.engine._set_bulk_size(num_threads)
             sym, arg_params, aux_params = mx.contrib.onnx.import_model(model_info['path'])
