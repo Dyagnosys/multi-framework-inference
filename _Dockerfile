@@ -139,4 +139,4 @@ RUN pip3 install --no-cache-dir \
 
 RUN ldconfig
 
-CMD ["python3", "benchmark_with_multiple_frameworks.py"]
+CMD ["python3", "benchmark_no_tvm.py"]
