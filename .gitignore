@@ -1,0 +1,55 @@
+# Python
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+*.so
+
+# Jupyter Notebook checkpoints
+.ipynb_checkpoints/
+
+# Docker
+__Dockerfile
+_Dockerfile
+A_Dockerfile
+Dockerfile
+
+# Virtual environment
+env/
+venv/
+ENV/
+.venv/
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Log files
+*.log
+
+# Benchmarks and Results
+benchmark_results.csv
+cnn_benchmark_results.png
+mlp_benchmark_results.png
+transformer_benchmark_results.png
+throughput_heatmap.png
+
+# Model test files
+test_cnn.onnx
+test_mlp.onnx
+test_transformer.onnx
+
+# Output files
+output.mp4
+emotion-recognition-benchmark
+onnxtime_profile__*
+system_info.json
+
+# Dependency directories
+node_modules/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
