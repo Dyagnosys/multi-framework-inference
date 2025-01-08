@@ -85,10 +85,9 @@ class ComprehensiveBenchmark:
                 'logical_cores': psutil.cpu_count(logical=True),
                 'memory_gb': round(psutil.virtual_memory().total / (1024 ** 3), 2),
                 'onnxruntime_version': ort.__version__,
-                'mxnet_version': mx.__version__,
+                'mxnet_version': mx.__version__ if MXNET_AVAILABLE else "Not installed",
                 'tensorflow_version': tf.__version__,
-                'pytorch_version': torch.__version__,
-                'onednn_version': onednn.__version__
+                'pytorch_version': torch.__version__
             }
         except Exception as e:
             logger.error(f"Error getting system info: {e}")
