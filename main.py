@@ -23,6 +23,10 @@ class EmotionPredictor:
     def __init__(self, model_path):
         self.session = self.initialize_inference_session(model_path)
         self.lock = threading.Lock()
+        self.mean = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape(3, 1, 1)
+        self.std = np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape(3, 1, 1)
+        self.resized_buffer = np.zeros((224, 224, 3), dtype=np.float32)
+        self.chw_buffer = np.zeros((3, 224, 224), dtype=np.float32)
         
     def initialize_inference_session(self, model_path):
         options = ort.SessionOptions()
@@ -37,27 +41,18 @@ class EmotionPredictor:
         
         return ort.InferenceSession(model_path, sess_options=options, providers=providers)
         
-def preprocess_frame(self, frame):
-    # Pre-allocate arrays for efficiency
-    resized = np.empty((224, 224, 3), dtype=np.float32)
-    cv2.resize(frame, (224, 224), dst=resized)
-    resized /= 255.0
-    
-    # Pre-allocated CHW array
-    chw = np.empty((3, 224, 224), dtype=np.float32)
-    for i in range(3):
-        chw[i] = resized[..., i]
+    def preprocess_frame(self, frame):
+        cv2.resize(frame, (224, 224), dst=self.resized_buffer)
+        self.resized_buffer = self.resized_buffer.astype(np.float32) / 255.0
         
-    # Pre-computed normalization arrays
-    mean = np.array([0.485, 0.456, 0.406], dtype=np.float32).reshape(3, 1, 1)
-    std = np.array([0.229, 0.224, 0.225], dtype=np.float32).reshape(3, 1, 1)
-    
-    # In-place operations
-    np.subtract(chw, mean, out=chw)
-    np.divide(chw, std, out=chw)
-    return chw
+        for i in range(3):
+            self.chw_buffer[i] = self.resized_buffer[..., i]
         
-    def predict_batch(self, frame):
+        self.chw_buffer -= self.mean
+        self.chw_buffer /= self.std
+        return self.chw_buffer.copy()
+        
+    def inference(self, frame):
         preprocessed = self.preprocess_frame(frame)
         with self.lock:
             input_name = self.session.get_inputs()[0].name
@@ -80,7 +75,7 @@ def get_emotion_label(prediction):
 def process_video_chunk(frames, predictor):
     results = []
     for frame in frames:
-        result = predictor.predict_batch(frame)
+        result = predictor.inference(frame)
         results.append(result)
     return results
 
@@ -140,6 +135,19 @@ def main():
                 
                 batch_frames = []
                 batch_originals = []
+    
+        if batch_frames:
+            results = process_video_chunk(batch_frames, predictor)
+            for orig_frame, result in zip(batch_originals, results):
+                emotion = get_emotion_label(result)
+                cv2.putText(orig_frame, 
+                          f"Emotion: {emotion}",
+                          (10, 30),
+                          cv2.FONT_HERSHEY_SIMPLEX,
+                          1,
+                          (0, 255, 0),
+                          2)
+                out.write(orig_frame)
     
     duration = time.time() - start_time
     logger.info(f"Processed {frame_count} frames in {duration:.2f}s ({frame_count/duration:.2f} fps)")
