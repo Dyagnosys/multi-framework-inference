@@ -1,36 +1,32 @@
-FROM ubuntu:20.04
+# Use an official Python runtime as a parent image
+FROM python:3.9-slim
 
-ENV DEBIAN_FRONTEND=noninteractive
+# Set the working directory
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y \
-    python3 \
-    python3-pip \
-    python3-dev \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
+# Install system dependencies
+RUN apt-get update && \
+    apt-get install -y \
+        build-essential \
+        libatlas-base-dev \
+        libprotobuf-dev \
+        protobuf-compiler \
+        git \
+        wget \
+        && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
-# Intel CPU optimizations
-ENV CFLAGS="-O3 -march=native -mavx2 -mfma"
-ENV CXXFLAGS="-O3 -march=native -mavx2 -mfma"
-ENV MKLDNN_MAX_CPU_ISA=AVX2
-ENV KMP_AFFINITY=granularity=fine,compact,1,0
-ENV KMP_BLOCKTIME=1
-ENV OMP_NUM_THREADS=4
-ENV MKL_NUM_THREADS=4
-ENV OPENBLAS_NUM_THREADS=4
-ENV VECLIB_MAXIMUM_THREADS=4
-ENV TF_NUM_INTEROP_THREADS=4
-ENV TF_NUM_INTRAOP_THREADS=4
-ENV TF_ENABLE_ONEDNN_OPTS=1
-ENV TORCH_CPU_ARCH=avx2
-
-# Suppress TensorFlow informational logs
-ENV TF_CPP_MIN_LOG_LEVEL=2
-
+# Install Python dependencies
 COPY requirements.txt .
-RUN pip3 install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
-COPY benchmark_intel.py .
+# Copy the application code
+COPY . .
 
-CMD ["python3", "benchmark_intel.py"]
+# Set environment variables
+ENV TFLITE_MODEL_PATH=models/your_model.tflite
+ENV ONNX_MODEL_PATH=models/your_model.onnx
+
+# Run the application
+CMD ["python", "compare_models.py"]
