@@ -11,24 +11,7 @@ from typing import Dict, List, Optional, Union
 import seaborn as sns
 from dataclasses import dataclass
 import onnxruntime as ort
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-try:
-    import mxnet as mx
-    MXNET_AVAILABLE = True
-except (ImportError, AttributeError):
-    MXNET_AVAILABLE = False
-    logger.warning("MXNet import failed - MXNet benchmarks will be skipped")
 import tensorflow as tf
-ONEDNN_AVAILABLE = False
-logger.warning("OneDNN not available - skipping related benchmarks")
-from pathlib import Path
-from typing import Dict, List, Optional, Union
-import seaborn as sns
-from dataclasses import dataclass
-import logging
 from concurrent.futures import ThreadPoolExecutor
 
 logging.basicConfig(level=logging.INFO)
@@ -49,34 +32,22 @@ class ComprehensiveBenchmark:
         self.system_info = self._get_system_info()
         self.num_warmup = num_warmup
         self.num_iterations = num_iterations
-        self.frameworks = [
-            'onnx',
-            'tensorflow_xla',
-            'pytorch_torchscript',
-            'mxnet'
-        ]
+        self.frameworks = ['onnx', 'pytorch_torchscript', 'tensorflow_xla']
         self.torchscript_models = {}
         self._initialize_frameworks()
-        
+
     def _initialize_frameworks(self):
         # ONNX Runtime optimization
         self.ort_options = ort.SessionOptions()
         self.ort_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         self.ort_options.enable_cpu_mem_arena = True
-        self.ort_options.add_session_config_entry('session.intra_op.allow_spinning', '1')
         
-        # PyTorch optimization
-        torch.set_num_threads(psutil.cpu_count(logical=False))
-        torch.set_num_interop_threads(psutil.cpu_count(logical=False))
-        
-        # TensorFlow optimization
-        tf.config.threading.set_inter_op_parallelism_threads(psutil.cpu_count(logical=False))
-        tf.config.threading.set_intra_op_parallelism_threads(psutil.cpu_count(logical=False))
-        
-        # TFLite
-        self.tflite_delegates = {
-            'xnnpack': tf.lite.experimental.load_delegate('libxnnpack.so')
-        }
+        # Thread optimizations
+        num_cores = psutil.cpu_count(logical=False)
+        torch.set_num_threads(num_cores)
+        torch.set_num_interop_threads(num_cores)
+        tf.config.threading.set_inter_op_parallelism_threads(num_cores)
+        tf.config.threading.set_intra_op_parallelism_threads(num_cores)
 
     def _get_system_info(self) -> Dict[str, any]:
         try:
@@ -86,7 +57,6 @@ class ComprehensiveBenchmark:
                 'logical_cores': psutil.cpu_count(logical=True),
                 'memory_gb': round(psutil.virtual_memory().total / (1024 ** 3), 2),
                 'onnxruntime_version': ort.__version__,
-                'mxnet_version': mx.__version__ if MXNET_AVAILABLE else "Not installed",
                 'tensorflow_version': tf.__version__,
                 'pytorch_version': torch.__version__
             }
@@ -105,7 +75,6 @@ class ComprehensiveBenchmark:
         return 'Unknown CPU'
 
     def create_test_models(self) -> Dict[str, Dict]:
-        """Create benchmark models for different architectures"""
         models = {}
         model_configs = [
             ModelConfig('mlp', (1, 128)),
@@ -235,43 +204,8 @@ class ComprehensiveBenchmark:
             logger.error(f"PyTorch benchmark error: {e}")
             return {}
 
-    def benchmark_mxnet(self, model_info: Dict, num_threads: int) -> Dict:
-        if not MXNET_AVAILABLE:
-            logger.warning("MXNet not available - skipping benchmark")
-            return {}
-        try:
-            mx.engine._set_bulk_size(num_threads)
-            sym, arg_params, aux_params = mx.contrib.onnx.import_model(model_info['path'])
-            mod = mx.mod.Module(symbol=sym, context=mx.cpu())
-            
-            data_shape = model_info['input_shape']
-            if len(data_shape) == 2:  # For transformer model
-                data_shape = (data_shape[0], data_shape[1])
-                
-            mod.bind(for_training=False, data_shapes=[('input', data_shape)])
-            mod.set_params(arg_params=arg_params, aux_params=aux_params)
-            
-            data_iter = mx.io.NDArrayIter(
-                model_info['input_data'], 
-                batch_size=model_info['input_shape'][0]
-            )
-            
-            latencies = self._run_inference(
-                lambda: mod.predict(data_iter).asnumpy(),
-                model_info['input_shape'][0]
-            )
-            
-            return self._calculate_metrics('MXNet', num_threads, latencies)
-        except Exception as e:
-            logger.error(f"MXNet benchmark error: {e}")
-            return {}
-
-    def benchmark_onednn(self, model_info: Dict, num_threads: int) -> Dict:
-        logger.warning("OneDNN benchmarking not implemented")
-        return {}
-
-    def benchmark_tflite_xnnpack(self, model_info: Dict, num_threads: int) -> Dict:
-        logger.warning("TFLite XNNPACK benchmarking not implemented")
+    def benchmark_tensorflow_xla(self, model_info: Dict, num_threads: int) -> Dict:
+        logger.warning("TensorFlow XLA benchmarking not implemented")
         return {}
 
     def _run_inference(self, inference_fn, batch_size: int) -> List[float]:
@@ -330,10 +264,7 @@ class ComprehensiveBenchmark:
             benchmark_functions = {
                 'onnx': self.benchmark_onnx,
                 'tensorflow_xla': self.benchmark_tensorflow_xla,
-                'pytorch_torchscript': self.benchmark_pytorch_torchscript,
-                'mxnet': self.benchmark_mxnet,
-                'onednn': self.benchmark_onednn,
-                'tflite_xnnpack': self.benchmark_tflite_xnnpack
+                'pytorch_torchscript': self.benchmark_pytorch_torchscript
             }
             
             with ThreadPoolExecutor(max_workers=len(self.frameworks)) as executor:
@@ -364,7 +295,6 @@ class ComprehensiveBenchmark:
         logger.info("\nBenchmark complete!")
 
     def save_results(self, output_dir: str = '.'):
-        """Save benchmark results and generate visualizations"""
         Path(output_dir).mkdir(exist_ok=True)
         
         # Save raw results
@@ -380,7 +310,6 @@ class ComprehensiveBenchmark:
         logger.info(f"Results saved to {output_dir}")
 
     def _create_plots(self, df: pd.DataFrame, output_dir: str):
-        """Create visualization plots for benchmark results"""
         model_types = df['model_type'].unique()
         metrics = ['avg_latency', 'p95_latency', 'throughput']
         
