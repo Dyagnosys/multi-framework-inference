@@ -125,7 +125,7 @@ ENV VECLIB_MAXIMUM_THREADS=4
 ENV NUMEXPR_NUM_THREADS=4
 
 COPY requirements.txt .
-COPY benchmark_no_tvm.py . 
+COPY benchmark_with_multiple_frameworks.py . 
 
 RUN pip3 install --no-cache-dir -r requirements.txt
 
