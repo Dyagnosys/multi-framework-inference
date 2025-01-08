@@ -57,7 +57,7 @@ def preprocess_frame(self, frame):
     np.divide(chw, std, out=chw)
     return chw
         
-    def predict(self, frame):
+    def predict_batch(self, frame):
         preprocessed = self.preprocess_frame(frame)
         with self.lock:
             input_name = self.session.get_inputs()[0].name
@@ -80,7 +80,7 @@ def get_emotion_label(prediction):
 def process_video_chunk(frames, predictor):
     results = []
     for frame in frames:
-        result = predictor.predict(frame)
+        result = predictor.predict_batch(frame)
         results.append(result)
     return results
 
