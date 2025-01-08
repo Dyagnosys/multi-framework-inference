@@ -21,7 +21,8 @@ except (ImportError, AttributeError):
     MXNET_AVAILABLE = False
     logger.warning("MXNet import failed - MXNet benchmarks will be skipped")
 import tensorflow as tf
-import onednn
+ONEDNN_AVAILABLE = False
+logger.warning("OneDNN not available - skipping related benchmarks")
 from pathlib import Path
 from typing import Dict, List, Optional, Union
 import seaborn as sns
