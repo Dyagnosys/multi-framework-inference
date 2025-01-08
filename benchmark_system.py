@@ -61,13 +61,19 @@ class ComprehensiveBenchmark:
         self._initialize_frameworks()
         
     def _initialize_frameworks(self):
-        """Initialize framework-specific configurations"""
-        # ONNX Runtime
+        # ONNX Runtime optimization
         self.ort_options = ort.SessionOptions()
         self.ort_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        self.ort_options.enable_cpu_mem_arena = True
+        self.ort_options.add_session_config_entry('session.intra_op.allow_spinning', '1')
         
-        # MXNet
-        mx.engine.set_bulk_size(1)  # Default to single thread
+        # PyTorch optimization
+        torch.set_num_threads(psutil.cpu_count(logical=False))
+        torch.set_num_interop_threads(psutil.cpu_count(logical=False))
+        
+        # TensorFlow optimization
+        tf.config.threading.set_inter_op_parallelism_threads(psutil.cpu_count(logical=False))
+        tf.config.threading.set_intra_op_parallelism_threads(psutil.cpu_count(logical=False))
         
         # OneDNN
         self.onednn_engine = onednn.Engine()
@@ -129,31 +135,43 @@ class ComprehensiveBenchmark:
     def _create_model(self, config: ModelConfig) -> torch.nn.Module:
         if config.name == 'mlp':
             return torch.nn.Sequential(
-                torch.nn.Linear(128, 256),
+                torch.nn.Linear(128, 512),
                 torch.nn.ReLU(),
+                torch.nn.BatchNorm1d(512),
+                torch.nn.Dropout(0.1),
+                torch.nn.Linear(512, 256),
+                torch.nn.ReLU(),
+                torch.nn.BatchNorm1d(256),
                 torch.nn.Linear(256, 128)
             )
         elif config.name == 'cnn':
             return torch.nn.Sequential(
-                torch.nn.Conv2d(3, 16, 3, padding=1),
+                torch.nn.Conv2d(3, 32, 3, padding=1),
                 torch.nn.ReLU(),
+                torch.nn.BatchNorm2d(32),
                 torch.nn.MaxPool2d(2),
-                torch.nn.Conv2d(16, 32, 3, padding=1),
+                torch.nn.Conv2d(32, 64, 3, padding=1),
                 torch.nn.ReLU(),
+                torch.nn.BatchNorm2d(64),
                 torch.nn.MaxPool2d(2),
                 torch.nn.Flatten(),
-                torch.nn.Linear(32 * 6 * 6, 10)
+                torch.nn.Linear(64 * 6 * 6, 10)
             )
         elif config.name == 'transformer':
             return torch.nn.Sequential(
-                torch.nn.Embedding(1000, 64),
+                torch.nn.Embedding(1000, 128),
                 torch.nn.TransformerEncoder(
                     torch.nn.TransformerEncoderLayer(
-                        d_model=64, nhead=4, dim_feedforward=256
+                        d_model=128, 
+                        nhead=8,
+                        dim_feedforward=512,
+                        dropout=0.1,
+                        activation='gelu'
                     ),
-                    num_layers=2
+                    num_layers=4
                 ),
-                torch.nn.Linear(64, 10)
+                torch.nn.LayerNorm(128),
+                torch.nn.Linear(128, 10)
             )
         else:
             raise ValueError(f"Unknown model type: {config.name}")
@@ -254,34 +272,8 @@ class ComprehensiveBenchmark:
             return {}
 
     def benchmark_onednn(self, model_info: Dict, num_threads: int) -> Dict:
-        try:
-            onednn.set_num_threads(num_threads)
-            model = onednn.Model(self.onednn_engine)
-            model.load_onnx(model_info['path'])
-            
-            stream = onednn.Stream(self.onednn_engine)
-            mem_format = (onednn.Memory.Format.nc 
-                        if len(model_info['input_shape']) == 2 
-                        else onednn.Memory.Format.nchw)
-            
-            input_memory = onednn.Memory(
-                self.onednn_engine,
-                model_info['input_data'].shape,
-                onednn.Memory.DataType.f32,
-                mem_format
-            )
-            
-            def inference():
-                input_memory.set_data_handle(model_info['input_data'])
-                outputs = model.execute(stream, {'input': input_memory})
-                stream.wait()
-                return outputs[0]
-            
-            latencies = self._run_inference(inference, model_info['input_shape'][0])
-            return self._calculate_metrics('OneDNN', num_threads, latencies)
-        except Exception as e:
-            logger.error(f"OneDNN benchmark error: {e}")
-            return {}
+        logger.warning("OneDNN benchmarking not implemented")
+        return {}
 
     def benchmark_tflite_xnnpack(self, model_info: Dict, num_threads: int) -> Dict:
         try:
