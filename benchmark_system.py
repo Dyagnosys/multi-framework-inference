@@ -53,9 +53,7 @@ class ComprehensiveBenchmark:
             'onnx',
             'tensorflow_xla',
             'pytorch_torchscript',
-            'mxnet',
-            'onednn',
-            'tflite_xnnpack'
+            'mxnet'
         ]
         self.torchscript_models = {}
         self._initialize_frameworks()
