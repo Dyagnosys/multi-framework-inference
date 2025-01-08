@@ -8,11 +8,7 @@ __pycache__/
 # Jupyter Notebook checkpoints
 .ipynb_checkpoints/
 
-# Docker
-__Dockerfile
-_Dockerfile
-A_Dockerfile
-Dockerfile
+
 
 # Virtual environment
 env/
