@@ -1,37 +1,38 @@
-# Use the OpenVINO ONNX Runtime image as base
-FROM openvino/onnxruntime_ep_ubuntu20:latest
+FROM openvino/onnxruntime_ep_ubuntu20
 
-# Set working directory
 WORKDIR /app
+USER root
 
-# (A) Copy your code and assets into the container
-#     If your code is in the same folder as this Dockerfile,
-#     you can copy everything. Otherwise, adjust accordingly.
-COPY . .
+# Performance optimization environment variables
+ENV MKLDNN_VERBOSE=1
+ENV KMP_AFFINITY=granularity=fine,compact,1,0
+ENV KMP_BLOCKTIME=1
+ENV OMP_NUM_THREADS=2
+ENV MKL_NUM_THREADS=2
+ENV OPENBLAS_NUM_THREADS=2
+ENV VECLIB_MAXIMUM_THREADS=2
+ENV NUMEXPR_NUM_THREADS=2
 
-# (B) Install Python dependencies.
-#     Some may already be installed in the base image;
-#     you can remove any duplicates if they're present.
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
     python3-pip \
-    python3-opencv \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    libopenblas-base \
+    libgomp1 \
+    intel-mkl \
     && rm -rf /var/lib/apt/lists/*
 
-# (C) If you have a requirements.txt, use it; otherwise, install packages directly.
-#     This snippet installs the minimal packages needed for your script.
-RUN pip3 install --no-cache-dir \
-    numpy \
-    onnxruntime \
-    opencv-python
+# Create necessary directories
+RUN mkdir -p assets/models assets/videos
 
-# (D) Set environment variables for threading
-ENV OMP_NUM_THREADS=4
-ENV MKL_NUM_THREADS=4
+# Copy requirements and install Python dependencies
+COPY requirements.txt .
+RUN pip3 install --no-cache-dir -r requirements.txt
 
-# (E) Expose any ports if needed (not strictly required for a batch script)
-# EXPOSE 8080
+# Copy application files
+COPY main.py .
+COPY assets/ assets/
 
-# (F) Set the default command to run your script. 
-#     If your file is named "main.py" and contains the `if __name__ == "__main__": main()`,
-#     this command will start the pipeline.
+# Default command
 CMD ["python3", "main.py"]
