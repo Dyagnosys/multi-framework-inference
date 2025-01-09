@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+ <meta charset="UTF-8" />
+ <title>Emotion Recognition in the Browser</title>
+ <style>
+  body {
+   font-family: Arial, sans-serif;
+   max-width: 800px;
+   margin: 0 auto;
+   padding: 20px;
+   background-color: #f0f0f0;
+  }
+
+  h1 {
+   color: #333;
+  }
+
+  #video,
+  #canvas {
+   display: block;
+   margin-bottom: 1rem;
+   max-width: 100%;
+   height: auto;
+  }
+
+  #status,
+  #fps {
+   font-weight: bold;
+   margin-bottom: 10px;
+  }
+
+  #error {
+   color: red;
+   margin-bottom: 10px;
+  }
+ </style>
+</head>
+
+<body>
+ <h1>Browser-based Emotion Recognition</h1>
+
+ <div id="status">Status: Initializing...</div>
+ <div id="fps">FPS: 0</div>
+ <div id="error"></div>
+
+ <input type="file" id="videoFile" accept="video/*" />
+ <select id="wasmType">
+  <option value="ort-wasm-simd-threaded.wasm">SIMD + Multi-threading</option>
+  <option value="ort-wasm-simd.wasm">SIMD only</option>
+  <option value="ort-wasm.wasm">Basic WASM</option>
+ </select>
+ <video id="video" width="640" height="360" controls></video>
+ <canvas id="canvas" width="640" height="360"></canvas>
+
+ <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/ort.min.js"></script>
+ <script>
+  const EMOTION_LABELS = ['Angry', 'Disgust', 'Fear', 'Happy', 'Sad', 'Surprise', 'Neutral'];
+  const INPUT_RESOLUTION = [224, 224];
+
+  let session;
+  let video = document.getElementById('video');
+  let canvas = document.getElementById('canvas');
+  let ctx = canvas.getContext('2d');
+  let statusElement = document.getElementById('status');
+  let errorElement = document.getElementById('error');
+  let fpsElement = document.getElementById('fps');
+  let wasmSelect = document.getElementById('wasmType');
+
+  let lastTime = 0;
+  let frameCount = 0;
+
+  async function loadModel() {
+   try {
+    statusElement.textContent = "Status: Loading ONNX model...";
+
+    // Set up ONNX Runtime Web options
+    const wasmPaths = {
+     'ort-wasm-simd-threaded.wasm': 'https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/',
+     'ort-wasm-simd.wasm': 'https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/',
+     'ort-wasm.wasm': 'https://cdn.jsdelivr.net/npm/onnxruntime-web/dist/'
+    };
+    ort.env.wasm.wasmPaths = wasmPaths;
+    ort.env.wasm.simd = true;
+    ort.env.wasm.numThreads = navigator.hardwareConcurrency || 4;
+
+    const sessionOptions = {
+     executionProviders: ['wasm'],
+     graphOptimizationLevel: 'all'
+    };
+
+    session = await ort.InferenceSession.create('/assets/models/FER_static_ResNet50_AffectNet.onnx', sessionOptions);
+    statusElement.textContent = "Status: Model loaded successfully!";
+   } catch (error) {
+    console.error("Error loading the model:", error);
+    errorElement.textContent = `Error loading the model: ${error.message}`;
+   }
+  }
+
+  function preprocessFrame(imageData) {
+   let offscreen = document.createElement('canvas');
+   let [targetW, targetH] = INPUT_RESOLUTION;
+   offscreen.width = targetW;
+   offscreen.height = targetH;
+   let octx = offscreen.getContext('2d');
+   octx.drawImage(canvas, 0, 0, canvas.width, canvas.height, 0, 0, targetW, targetH);
+   let resizedData = octx.getImageData(0, 0, targetW, targetH).data;
+
+   let floatData = new Float32Array(targetW * targetH * 3);
+   const mean = [0.485, 0.456, 0.406];
+   const std = [0.229, 0.224, 0.225];
+
+   for (let i = 0; i < targetW * targetH; i++) {
+    for (let c = 0; c < 3; c++) {
+     let value = resizedData[4 * i + c] / 255.0;
+     floatData[c * targetW * targetH + i] = (value - mean[c]) / std[c];
+    }
+   }
+
+   return new ort.Tensor('float32', floatData, [1, 3, targetH, targetW]);
+  }
+
+  async function predictEmotion() {
+   if (!session) return;
+
+   try {
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    let frameData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    let inputTensor = preprocessFrame(frameData);
+
+    let feeds = {};
+    feeds[session.inputNames[0]] = inputTensor;
+
+    const results = await session.run(feeds);
+    const prediction = results[session.outputNames[0]].data;
+
+    let maxIdx = prediction.indexOf(Math.max(...prediction));
+    const emotion = EMOTION_LABELS[maxIdx];
+    const confidence = prediction[maxIdx];
+
+    ctx.font = "30px Arial";
+    ctx.fillStyle = "rgba(0, 255, 0, 0.7)";
+    ctx.fillText(`Emotion: ${emotion} (${(confidence * 100).toFixed(2)}%)`, 10, 40);
+
+    // Update FPS
+    const now = performance.now();
+    frameCount++;
+    if (now - lastTime >= 1000) {
+     fpsElement.textContent = `FPS: ${frameCount}`;
+     frameCount = 0;
+     lastTime = now;
+    }
+
+   } catch (error) {
+    console.error("Error during inference:", error);
+    errorElement.textContent = `Error during inference: ${error.message}`;
+   }
+  }
+
+  function startProcessing() {
+   function loop() {
+    if (!video.paused && !video.ended) {
+     predictEmotion();
+    }
+    requestAnimationFrame(loop);
+   }
+   loop();
+  }
+
+  document.getElementById('videoFile').addEventListener('change', (evt) => {
+   const file = evt.target.files[0];
+   if (file) {
+    const url = URL.createObjectURL(file);
+    video.src = url;
+    statusElement.textContent = "Status: Video loaded. Press play to start emotion recognition.";
+   }
+  });
+
+  video.addEventListener('play', () => {
+   statusElement.textContent = "Status: Processing video...";
+   startProcessing();
+  });
+
+  wasmSelect.addEventListener('change', async () => {
+   ort.env.wasm.wasmType = wasmSelect.value;
+   await loadModel();
+  });
+
+  loadModel();
+ </script>
+</body>
+
+</html>

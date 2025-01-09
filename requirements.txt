@@ -1,10 +1,4 @@
-torch
-torchvision
+torch==1.13.1
+torchvision==0.14.1
+opencv-python-headless
 numpy
-opencv-python
-onnx
-onnxruntime-openvino
-matplotlib
-librosa
-scikit-learn
-pillow
