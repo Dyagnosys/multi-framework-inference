@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+ <meta charset="UTF-8">
+ <meta name="viewport" content="width=device-width, initial-scale=1.0">
+ <title>TensorFlow Lite Emotion Recognition with XNNPACK</title>
+ <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.18.0"></script>
+ <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-tflite@0.0.1-alpha.9"></script>
+ <style>
+  body {
+   font-family: Arial, sans-serif;
+   text-align: center;
+   max-width: 800px;
+   margin: 0 auto;
+   padding: 20px;
+  }
+
+  #videoElement {
+   margin-top: 20px;
+   max-width: 100%;
+   height: auto;
+  }
+
+  #result,
+  #fps,
+  #modelInfo {
+   font-size: 18px;
+   margin-top: 10px;
+  }
+
+  #error {
+   color: red;
+   font-weight: bold;
+  }
+
+  #modelSelector {
+   margin-top: 20px;
+  }
+ </style>
+</head>
+
+<body>
+ <h1>TensorFlow Lite Emotion Recognition with XNNPACK</h1>
+ <div id="modelSelector">
+  <label for="modelType">Select Model Type:</label>
+  <select id="modelType">
+   <option value="tflite">TensorFlow Lite</option>
+   <option value="tfjs">TensorFlow.js</option>
+  </select>
+  <button onclick="loadSelectedModel()">Load Model</button>
+ </div>
+ <div id="modelInfo"></div>
+ <div id="error"></div>
+ <video id="videoElement" width="640" height="480" autoplay></video>
+ <div id="result"></div>
+ <div id="fps"></div>
+
+ <script>
+  const EMOTION_LABELS = ['Angry', 'Disgust', 'Fear', 'Happy', 'Sad', 'Surprise', 'Neutral'];
+  const INPUT_SIZE = [224, 224];
+  let model;
+  let lastTime = 0;
+  let frameCount = 0;
+  let isTFLite = true;
+
+  async function loadTFLiteModel() {
+   const modelInfo = document.getElementById('modelInfo');
+   const errorElement = document.getElementById('error');
+   try {
+    modelInfo.innerText = "Loading TFLite model...";
+    const tfliteModel = await tflite.loadTFLiteModel('assets/models/FER_static_ResNet50_AffectNet.tflite');
+    model = await tf.loadGraphModel(tfliteModel);
+    modelInfo.innerText = "TFLite model loaded successfully";
+    isTFLite = true;
+   } catch (error) {
+    console.error('Error loading TFLite model:', error);
+    errorElement.innerText = `TFLite model loading failed: ${error.message}`;
+    throw error;
+   }
+  }
+
+  async function loadTFJSModel() {
+   const modelInfo = document.getElementById('modelInfo');
+   const errorElement = document.getElementById('error');
+   try {
+    modelInfo.innerText = "Loading TensorFlow.js model...";
+    model = await tf.loadLayersModel('assets/models/FER_static_ResNet50_AffectNet.json');
+    modelInfo.innerText = "TensorFlow.js model loaded successfully";
+    isTFLite = false;
+   } catch (error) {
+    console.error('Error loading TensorFlow.js model:', error);
+    errorElement.innerText = `TensorFlow.js model loading failed: ${error.message}`;
+    throw error;
+   }
+  }
+
+  async function loadSelectedModel() {
+   const modelType = document.getElementById('modelType').value;
+   const errorElement = document.getElementById('error');
+   errorElement.innerText = ''; // Clear previous errors
+   try {
+    if (modelType === 'tflite') {
+     await loadTFLiteModel();
+    } else {
+     await loadTFJSModel();
+    }
+    setupCamera();
+   } catch (error) {
+    console.error('Model loading failed:', error);
+   }
+  }
+
+  function preprocess(imageData) {
+   return tf.tidy(() => {
+    const tensor = tf.browser.fromPixels(imageData)
+     .resizeBilinear(INPUT_SIZE)
+     .toFloat()
+     .div(tf.scalar(255))
+     .sub([0.485, 0.456, 0.406])
+     .div([0.229, 0.224, 0.225])
+     .expandDims();
+    return tensor;
+   });
+  }
+
+  async function predict(imageData) {
+   const tensor = preprocess(imageData);
+   let predictions;
+   if (isTFLite) {
+    predictions = await model.predict(tensor);
+   } else {
+    predictions = model.predict(tensor);
+   }
+   const emotionIndex = predictions.argMax(1).dataSync()[0];
+   const confidence = predictions.max().dataSync()[0];
+   tf.dispose(tensor);
+   tf.dispose(predictions);
+   return { emotion: EMOTION_LABELS[emotionIndex], confidence };
+  }
+
+  async function updatePrediction() {
+   const video = document.getElementById('videoElement');
+   const result = document.getElementById('result');
+   const fpsElement = document.getElementById('fps');
+
+   if (video.readyState === video.HAVE_ENOUGH_DATA) {
+    const { emotion, confidence } = await predict(video);
+    result.innerText = `Emotion: ${emotion} (${(confidence * 100).toFixed(2)}%)`;
+
+    // Update FPS
+    const now = performance.now();
+    frameCount++;
+    if (now - lastTime >= 1000) {
+     const fps = frameCount * 1000 / (now - lastTime);
+     fpsElement.innerText = `FPS: ${fps.toFixed(2)}`;
+     frameCount = 0;
+     lastTime = now;
+    }
+   }
+   requestAnimationFrame(updatePrediction);
+  }
+
+  async function setupCamera() {
+   const video = document.getElementById('videoElement');
+   try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+    video.srcObject = stream;
+    video.onloadedmetadata = () => {
+     updatePrediction();
+    };
+   } catch (error) {
+    console.error('Error accessing camera:', error);
+    document.getElementById('error').innerText = `Camera access failed: ${error.message}`;
+   }
+  }
+ </script>
+</body>
+
+</html>
